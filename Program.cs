@@ -10,13 +10,21 @@ using System.Security.Principal;
 using System.Xml.Linq;
 using System.DirectoryServices;
 using System.DirectoryServices.AccountManagement;
+using System.Text.RegularExpressions;
+using System.Security.Cryptography.X509Certificates;
 
 class Program
 {
 
+    #region Parameters
+
     public static int numberOfFolders, numberOfPermissions = 0;
 
     public static List<string> userList = new List<string>();
+    public static List<string> groupList = new List<string>();
+
+    public static string outfilePath = String.Empty;
+    public static string logfilePath = String.Empty;
 
     static List<string> ignoredNames = new List<string>
     {
@@ -32,9 +40,26 @@ class Program
         @"D2000\folioadmin"
     };
 
-    static List<string> explicitPermissionUsers = new List<string>();
-    static List<string> explicitPermissionFolders = new List<string>();
+    static List<string> ignoredNamesWildcard = new List<string>
+    {
+        @"D2000\\s_.*",
+        @"D2000\\dom_.*",
+        @"D2000\\admin_.*"
+    };
 
+    static List<string> explicitPermissionUsers = new List<string>();
+    static List<string> explicitPermissionGroups = new List<string>();
+    static List<string> explicitPermissionFolders = new List<string>();
+    static List<string> explicitPermissionFoldersInherited = new List<string>();
+
+    #endregion
+
+    #region Methods
+
+    /// <summary>
+    /// Main function
+    /// </summary>
+    /// <param name="args"></param>
     static void Main(string[] args)
     {
         if (args.Length == 0)
@@ -43,7 +68,6 @@ class Program
             return;
         }
 
-        CreateUserList();
 
         string sharename = args[0];
         string year = DateTime.Now.ToString("yyyy");
@@ -57,7 +81,13 @@ class Program
         string datenow = DateTime.Now.ToString("yyyy-MM-dd");
         string shareNameForFile = sharename.Contains(@"\") ? sharename.Split('\\').Last() : sharename;
         string outfile = $"{shareNameForFile}_ntfs_{datenow}.csv";
-        string outfilePath = Path.Combine(outdir, outfile);
+        outfilePath = Path.Combine(outdir, outfile);
+        logfilePath = outfilePath.Replace("csv", "log");
+        
+        CreateUserList();
+        CreateGroupList();
+
+        if (File.Exists(outfilePath)) { File.Delete(outfilePath); }
 
         string outputString = "FolderPath;IdentityReference;FileSystemRights;IsInherited";
         File.AppendAllText(outfilePath, outputString + Environment.NewLine);
@@ -94,8 +124,30 @@ class Program
             {
                 string shareName = foundShare["Name"].ToString();
                 string sharePath = foundShare["Path"].ToString();
+
+                
                 Console.WriteLine($"[info] Found share: {shareName} with path: {sharePath}");
-                ProcessDirectory(sharename, outfilePath);
+                //ProcessDirectory(sharename, outfilePath);
+                
+
+                
+                try
+                {
+                    // ProcessDirectory kann Zugriff verweigert werden, also in try-catch
+                    ProcessDirectory(sharename, outfilePath);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // Zugriff verweigert, aber das Skript bleibt nicht stehen
+                    Console.WriteLine($"[warning] Access denied when processing directory {sharename}: {ex.Message}");
+                }
+                catch (Exception ex)
+                {
+                    // Generelle Fehlerbehandlung
+                    Console.WriteLine($"[error] An error occurred while processing the directory {sharename}: {ex.Message}");
+                }
+                
+
             }
             else
             {
@@ -137,15 +189,25 @@ class Program
             MailMessage mail = new MailMessage();
             mail.From = new MailAddress($"Berechtigungsaudit <Berechtigungsaudit@{Environment.MachineName}.akm.at>");
             //mail.To.Add("meldungen.ber-audit.gbi@akm.at");
-            mail.To.Add("manuel.zarat@akm.at");
+            mail.To.Add("meldungen.ber-audit.gbi@akm.at");
             mail.Subject = shareNameForFile + " - CSV erstellt und abgelegt";
             mail.Body = $"{outfile} wurde erstellt und unter {outdir} abgelegt.\n\nStartzeit: {startDate}\nEndzeit: {endDate}\nAusführungsdauer: {executionTime}\nDateigröße: {fileSizeInKB:F2} KB\nAnzahl an Verzeichnissen: {numberOfFolders}\nAnzahl an Berechtigungen: {numberOfPermissions}";
 
-            mail.Body += "\n\nOrdner mit expliziten Userberechtigungen:\n";
+            mail.Body += "\n\nGruppen mit expliziten Berechtigungen:\n";
+            mail.Body += String.Join(Environment.NewLine, explicitPermissionGroups.Distinct());
+
+            mail.Body += "\n\nAccounts mit expliziten Berechtigungen:\n";
+            mail.Body += String.Join(Environment.NewLine, explicitPermissionUsers.Distinct());
+
+            mail.Body += "\n\nOrdner mit unterbrochenen (expliziten) Berechtigungen:\n";
             mail.Body += String.Join(Environment.NewLine, explicitPermissionFolders.Distinct());
 
-            mail.Body += "\n\nExplizite Userberechtigungen:\n";
-            mail.Body += String.Join(Environment.NewLine, explicitPermissionUsers.Distinct());
+            mail.Body += "\n\nOrdner mit vererbten (expliziten) Berechtigungen:\n";
+            mail.Body += String.Join(Environment.NewLine, explicitPermissionFoldersInherited.Distinct());
+
+            
+
+            File.AppendAllText(logfilePath, mail.Body);
 
             // SMTP Client erstellen
             SmtpClient smtpClient = new SmtpClient("relay.akm.at");
@@ -163,6 +225,11 @@ class Program
 
     }
 
+    /// <summary>
+    /// Find all folders in a Share and find the ACLs
+    /// </summary>
+    /// <param name="folderPath"></param>
+    /// <param name="outfilePath"></param>
     static void ProcessDirectory(string folderPath, string outfilePath)
     {
         // Get all directories
@@ -175,45 +242,123 @@ class Program
         foreach (string folder in directories)
         {
             //Console.WriteLine("[info] Processing folder " + folder);
-            ProcessFolder(folder, outfilePath);
+            //ProcessFolder(folder, outfilePath);
+
+            
+            try
+            {
+                // ProcessDirectory kann Zugriff verweigert werden, also in try-catch
+                ProcessFolder(folder, outfilePath);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                // Zugriff verweigert, aber das Skript bleibt nicht stehen
+                Console.WriteLine($"[warning] Access denied when processing directory {folder}: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                // Generelle Fehlerbehandlung
+                Console.WriteLine($"[error] An error occurred while processing the directory {folder}: {ex.Message}");
+            }
+            
+
         }
     }
 
+    /// <summary>
+    /// Get the ACLs of a specific folder
+    /// </summary>
+    /// <param name="folderPath"></param>
+    /// <param name="outfilePath"></param>
     static void ProcessFolder(string folderPath, string outfilePath)
     {
-        DirectoryInfo directoryInfo = new DirectoryInfo(folderPath);
-        DirectorySecurity directorySecurity = directoryInfo.GetAccessControl();
-        AuthorizationRuleCollection acl = directorySecurity.GetAccessRules(true, true, typeof(NTAccount));
 
-        foreach (FileSystemAccessRule rule in acl)
+        try
         {
-            string identity = rule.IdentityReference.Value;
 
-            string[] identityParts = identity.Split(new char[] { '\\' });
+            DirectoryInfo directoryInfo = new DirectoryInfo(folderPath);
+            DirectorySecurity directorySecurity = directoryInfo.GetAccessControl();
+            AuthorizationRuleCollection acl = directorySecurity.GetAccessRules(true, true, typeof(NTAccount));
 
-            Console.WriteLine($"[info] Found identity {identityParts[1]}");
+            foreach (FileSystemAccessRule rule in acl)
+            {
+                string identity = rule.IdentityReference.Value;
 
-            if (userList.Contains(identityParts[1])) { 
-                Console.WriteLine($"[info] Found {identityParts[1]} in userList");
-                explicitPermissionFolders.Add(folderPath);
-                explicitPermissionUsers.Add(identityParts[1]);
+                //Console.WriteLine($"[info] Found identity {identity}");
+
+                if (ignoredNames.Contains(identity))
+                {
+                    //Console.WriteLine($"[info] Found {identity} in ignoredNames");
+                    continue;
+                }
+
+                bool doContinue = false;
+
+                foreach (var pattern in ignoredNamesWildcard)
+                {
+                    // Überprüfen, ob der Input-String zum Regex-Muster passt
+                    if (Regex.IsMatch(identity, pattern))
+                    {
+                        doContinue = true;
+                    }
+                }
+
+                if (userList.Contains(identity))
+                {
+                    if (rule.IsInherited)
+                    {
+                        explicitPermissionFoldersInherited.Add("\"" + folderPath + "\"");
+                    }
+                    else
+                    {
+                        explicitPermissionFolders.Add("\"" + folderPath + "\"");
+                    }
+                    explicitPermissionUsers.Add(identity);
+                }
+
+                if (groupList.Contains(identity))
+                {
+                    explicitPermissionGroups.Add(identity);
+                }
+
+                if (doContinue)
+                {
+                    continue;
+                }
+
+                string rights = rule.FileSystemRights.ToString();
+                bool isInherited = rule.IsInherited;
+
+                numberOfPermissions++;
+
+                // Output format: "Folder;Identity;Rights;IsInherited"
+                string outputString = $"\"{folderPath}\";{identity};{rights};{isInherited}";
+
+                //Console.WriteLine("[info] " + outputString);
+                //Console.WriteLine("[info] Output in " + outfilePath);
+
+                File.AppendAllText(outfilePath, outputString + Environment.NewLine);
             }
-
-            string rights = rule.FileSystemRights.ToString();
-            bool isInherited = rule.IsInherited;
-
-            numberOfPermissions++;
-
-            // Output format: "Folder;Identity;Rights;IsInherited"
-            string outputString = $"\"{folderPath}\";{identity};{rights};{isInherited}";
-            
-            //Console.WriteLine("[info] " + outputString);
-            //Console.WriteLine("[info] Output in " + outfilePath);
-
-            File.AppendAllText(outfilePath, outputString + Environment.NewLine);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // Zugriff verweigert, aber das Skript bleibt nicht stehen
+            Console.WriteLine($"[warning] Access denied when processing directory {folderPath}: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            // Generelle Fehlerbehandlung
+            Console.WriteLine($"[error] An error occurred while processing the directory {folderPath}: {ex.Message}");
         }
     }
 
+    #endregion
+
+    #region Helper Methods
+
+    /// <summary>
+    /// Create a list of users from active directory
+    /// </summary>
     static void CreateUserList()
     {
         string ldapPath = "LDAP://d2000.local";
@@ -255,29 +400,102 @@ class Program
                         extensionAttribute10 = userEntry.Properties["extensionAttribute10"].Value?.ToString();
                     }
 
-                    if ((extensionAttribute10 != null && extensionAttribute10 == "User") )
+                    /*
+                    if ((extensionAttribute10 != null && (extensionAttribute10 == "User" || extensionAttribute10 == "technischer User") ) )
                     {
-                        string n = samAccountName.Trim();
+                        string n = "D2000\\" + samAccountName.Trim();
                         userList.Add(n);
                     }
-                    
-                    
+                    */
+
+                    string n = "D2000\\" + samAccountName.Trim();
+                    userList.Add(n);
+
                 }
             }
+            userList.Add("\n==================\n");
 
+            /*
             // Ausgabe der gefundenen Benutzer
-            Console.WriteLine("Users with objectClass 'user' or 'group':");
+            //Console.WriteLine("Users with objectClass 'user':");
             foreach (var user in userList)
             {
-                Console.WriteLine(user);
+                //Console.WriteLine(user);
+                File.AppendAllText(logfilePath, user + Environment.NewLine);
             }
 
-            // Hier kannst du mit der Liste weiterarbeiten
+            File.AppendAllText(logfilePath, Environment.NewLine);
+            */
+
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Exception: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Create a list of groups from active directory
+    /// </summary>
+    static void CreateGroupList()
+    {
+        string ldapPath = "LDAP://d2000.local";
+
+        try
+        {
+            // Liste, um die SamAccountNames zu speichern
+            groupList = new List<string>();
+
+            // AD-Verbindung herstellen
+            DirectoryEntry entry = new DirectoryEntry(ldapPath);
+            DirectorySearcher searcher = new DirectorySearcher(entry);
+
+            // Suche nach Objekten, die den objectClass "user" oder "group" haben
+            //searcher.Filter = "(|(objectClass=user)(objectClass=group))"; // Filter für alle Objekte
+            searcher.Filter = "(&(objectClass=group))";
+            searcher.PageSize = 100000; // Optional: erhöht die Abfrageleistung bei großen AD-Strukturen
+            searcher.PropertiesToLoad.Add("sAMAccountName");  // Lade SamAccountName
+
+            // Durchlaufe alle Suchergebnisse
+            foreach (SearchResult result in searcher.FindAll())
+            {
+                DirectoryEntry userEntry = result.GetDirectoryEntry();
+
+                // Prüfen, ob "sAMAccountName" vorhanden ist
+                if (userEntry.Properties.Contains("sAMAccountName"))
+                {
+
+                    //Console.WriteLine("SAMAccountName OK");
+
+                    // Hole den SamAccountName
+                    string samAccountName = userEntry.Properties["sAMAccountName"].Value?.ToString();
+
+                    string n = "D2000\\" + samAccountName.Trim();
+                    groupList.Add(n);
+
+                }
+            }
+            groupList.Add("\n==================\n");
+
+            /*
+            // Ausgabe der gefundenen Benutzer
+            //Console.WriteLine("Users with objectClass 'user':");
+            foreach (var user in groupList)
+            {
+                //Console.WriteLine(user);
+                File.AppendAllText(logfilePath, user + Environment.NewLine);
+            }
+
+            File.AppendAllText(logfilePath, Environment.NewLine);
+            */
+
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Exception: {ex.Message}");
+        }
+    }
+
+    #endregion
 
 }
