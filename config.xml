@@ -1,0 +1,35 @@
+<config>
+	<general>
+		<servername>fileserver</servername>
+		<showonlybroken>0</showonlybroken>
+		<outdir>C:\Scripts\Berechtigungsaudit\Shares\2024</outdir>
+	</general>
+	<email>
+		<relay>relay.domain.local</relay>
+		<sendfrom>Berechtigungsaudit@audit.domain.local</sendfrom>
+		<sendto>meldungen@domain.local,manuel.zarat@domain.local</sendto>
+		<!--<sendto>manuel.zarat@domain.local</sendto>-->
+		<maxattachmentsize>20000</maxattachmentsize>
+	</email>
+	<ignoredAccounts>
+        	<account>NT-AUTORITÄT\SYSTEM</account>
+        	<account>NT AUTHORITY\SYSTEM</account>
+        	<account>BUILTIN\Administrators</account>
+        	<account>BUILTIN\Users</account>
+        	<account>VORDEFINIERT\Administratoren</account>
+        	<account>VORDEFINIERT\Benutzer</account>
+        	<account>domain\Administrator</account>
+        	<account>domain\Domänen-Admins</account>
+        	<account>domain\named_admins</account>
+        	<account>domain\folioadmin</account>
+    	</ignoredAccounts>
+	<ignoredAccountsWildcard>
+			<!--
+			See https://learn.microsoft.com/en-us/dotnet/standard/base-types/regular-expression-language-quick-reference
+			-->
+        	<account>domain\\s_.*</account>
+        	<account>domain\\admin_.*</account>
+        	<account>domain\\dom_.*</account>
+			<!--<account>domain\\lukas\..*</account>-->
+    	</ignoredAccountsWildcard>
+</config>
