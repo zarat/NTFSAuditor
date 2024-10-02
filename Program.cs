@@ -12,6 +12,8 @@ using System.DirectoryServices;
 using System.DirectoryServices.AccountManagement;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography.X509Certificates;
+using System.Xml;
+using System.Reflection;
 
 class Program
 {
@@ -27,6 +29,7 @@ class Program
     public static string outfilePath = String.Empty;
     public static string logfilePath = String.Empty;
 
+    /*
     static List<string> ignoredNames = new List<string>
     {
         @"NT-AUTORITÄT\SYSTEM",
@@ -40,18 +43,25 @@ class Program
         @"D2000\named_admins",
         @"D2000\folioadmin"
     };
+    */
+    public static List<string> ignoredNames = ReadConfigList("//ignoredAccounts/account");
 
+    /*
     static List<string> ignoredNamesWildcard = new List<string>
     {
         @"D2000\\s_.*",
         @"D2000\\dom_.*",
         @"D2000\\admin_.*"
     };
+    */
+    public static List<string> ignoredNamesWildcard = ReadConfigList("//ignoredAccountsWildcard/account");
 
     static List<string> explicitPermissionUsers = new List<string>();
     static List<string> explicitPermissionGroups = new List<string>();
-    static List<string> explicitPermissionFolders = new List<string>();
-    static List<string> explicitPermissionFoldersInherited = new List<string>();
+    static List<string> explicitPermissionFoldersUsers = new List<string>();
+    static List<string> explicitPermissionFoldersGroups = new List<string>();
+    static List<string> explicitPermissionFoldersUsersInherited = new List<string>();
+    static List<string> explicitPermissionFoldersGroupsInherited = new List<string>();
 
     #endregion
 
@@ -63,9 +73,12 @@ class Program
     /// <param name="args"></param>
     static void Main(string[] args)
     {
+
+        Console.WriteLine("\n\tNTFSAuditor\n\t(C) 2024 - AKM AustroMechana\n");
+
         if (args.Length == 0)
         {
-            Console.WriteLine("Please provide a sharename as argument.");
+            Console.WriteLine($"\tUsage: {Assembly.GetExecutingAssembly().GetName().Name}.exe <Sharename>\n");
             return;
         }
 
@@ -73,6 +86,11 @@ class Program
         string sharename = args[0];
         string year = DateTime.Now.ToString("yyyy");
         string outdir = $@"C:\Scripts\Berechtigungsaudit\Shares\{year}";
+        string outdir_tmp = (string)ReadConfig("/config/general/outdir");
+        if (outdir_tmp != null && outdir_tmp != "")
+        {
+            outdir = outdir_tmp;
+        }
 
         if (!Directory.Exists(outdir))
         {
@@ -110,6 +128,13 @@ class Program
          * Connect to fileserver
          */
         string remoteComputer = "fileserver";
+
+        string remoteComputer_tmp = (string)ReadConfig("/config/general/servername");
+        if (remoteComputer_tmp != null && remoteComputer_tmp != "")
+        {
+            remoteComputer = remoteComputer_tmp;
+        }
+
         ManagementScope scope = new ManagementScope($@"\\{remoteComputer}\root\cimv2");
         scope.Connect();
 
@@ -142,8 +167,7 @@ class Program
             string found_shareName = foundShare["Name"].ToString();
             string found_sharePath = foundShare["Path"].ToString();
 
-
-            Console.WriteLine($"[info] Share: \"{found_shareName}\" gefunden. Pfad: \"{found_sharePath}\"");
+            Console.WriteLine($"[info] Share \"{found_shareName}\" gefunden. Pfad: \"{found_sharePath}\"");
 
             try
             {
@@ -177,9 +201,11 @@ class Program
         Console.WriteLine($"[info] Ausführungsdauer: \"{executionTime}\"");
         Console.ResetColor();
 
-        FileInfo fileInfo = new FileInfo(outdir + "\\" + outfile);
-        long fileSizeInBytes = fileInfo.Length;
-        double fileSizeInKB = fileSizeInBytes / 1024.0;
+        //FileInfo fileInfo = new FileInfo(outdir + "\\" + outfile);
+        //long fileSizeInBytes = fileInfo.Length;
+        //double fileSizeInKB = fileSizeInBytes / 1024.0;
+        double fileSizeInKB = new FileInfo(outfilePath).Length / 1024.0;
+        //double logfileSizeInKB = new FileInfo(logfilePath).Length / 1024.0;
 
         /*
          * Send email
@@ -187,12 +213,26 @@ class Program
         try
         {
 
+            string sendto = "meldungen.ber-audit.gbi@akm.at";
+            string sendfrom = $"Berechtigungsaudit@{Environment.MachineName}.akm.at";
+
+            string mail_tmp = (string)ReadConfig("/config/email/sendto");
+            if (mail_tmp != null && mail_tmp != "")
+            {
+                sendto = mail_tmp;
+            }
+            mail_tmp = (string)ReadConfig("/config/email/sendfrom");
+            if (mail_tmp != null && mail_tmp != "")
+            {
+                sendfrom = $"" + mail_tmp;
+            }
+
             MailMessage mail = new MailMessage();
-            mail.From = new MailAddress($"Berechtigungsaudit <Berechtigungsaudit@{Environment.MachineName}.akm.at>");
+            mail.From = new MailAddress(sendfrom);
             //mail.To.Add("meldungen.ber-audit.gbi@akm.at");
-            mail.To.Add("meldungen.ber-audit.gbi@akm.at");
+            mail.To.Add(sendto);
             mail.Subject = shareNameForFile + " - CSV erstellt und abgelegt";
-            mail.Body = $"{outfile} wurde erstellt und unter {outdir} abgelegt.\n\n";
+            mail.Body = $"{outfile} wurde erstellt und unter \"{outdir}\" abgelegt.\n\n";
 
             mail.BodyEncoding = System.Text.Encoding.UTF8;
             mail.SubjectEncoding = System.Text.Encoding.UTF8;
@@ -205,43 +245,70 @@ class Program
 
             logText += $"Statistik für: {sharename}\n\n";
 
-            logText += statistics + "\n\n";
-
-            logText += "Gruppen mit expliziten Berechtigungen:\n";
-            logText += String.Join(Environment.NewLine, explicitPermissionGroups.Distinct());
-
+            logText += statistics; // + "\n\n";
 
             logText += "\n\nAus der Erfassung ausgeschlossene Accounts:\n";
             logText += String.Join(Environment.NewLine, ignoredAccountsList.Distinct());
 
-            logText += "\n\nAccounts mit expliziten Berechtigungen:\n";
+            logText += "\n\nUser mit expliziten Berechtigungen:\n";
             logText += String.Join(Environment.NewLine, explicitPermissionUsers.Distinct());
 
-            logText += "\n\nOrdner mit unterbrochenen (expliziten) Berechtigungen:\n";
-            logText += String.Join(Environment.NewLine, explicitPermissionFolders.Distinct());
+            logText += "\n\nGruppen mit expliziten Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionGroups.Distinct());
 
-            logText += "\n\nOrdner mit vererbten (expliziten) Berechtigungen:\n";
-            logText += String.Join(Environment.NewLine, explicitPermissionFoldersInherited.Distinct());
+            logText += "\n\nOrdner mit unterbrochenen (expliziten) User-Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionFoldersUsers.Distinct());
+
+            logText += "\n\nOrdner mit unterbrochenen (expliziten) Gruppen-Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionFoldersGroups.Distinct());
+
+            logText += "\n\nOrdner mit vererbten (expliziten) User-Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionFoldersUsersInherited.Distinct());
+
+            logText += "\n\nOrdner mit vererbten (expliziten) Gruppen-Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionFoldersGroupsInherited.Distinct());
 
             File.AppendAllText(logfilePath, logText);
 
-            Attachment attachment = new Attachment(logfilePath); // Datei anhängen
-            mail.Attachments.Add(attachment);
+            double logfileSizeInKB = new FileInfo(logfilePath).Length / 1024.0;
+
+            double maxattachmentsize = 50000;
+            double maxattachmentsize_tmp = Double.Parse((string)ReadConfig("/config/email/maxattachmentsize"));
+            if (maxattachmentsize_tmp != null && maxattachmentsize_tmp.GetType() == typeof(double))
+            {
+                maxattachmentsize = maxattachmentsize_tmp;
+            }
+            if (logfileSizeInKB < maxattachmentsize)
+            {
+                Attachment attachment = new Attachment(logfilePath); // Datei anhängen
+                mail.Attachments.Add(attachment);
+                mail.Body += $"\n\nIm Anhang finden Sie die Logdatei mit detaillierten Informationen.";
+            }
+            else
+            {
+                mail.Body += $"\n\nDie Logdatei ist zu groß um an die Mail angehängt zu werden ({logfileSizeInKB:F2} KB) und ist ebenfalls unter \"{outdir}\" abgelegt.";
+            }
 
             //File.AppendAllText(logfilePath, mail.Body);
 
             // SMTP Client erstellen
-            SmtpClient smtpClient = new SmtpClient("relay.akm.at");
+            string relay = "relay.akm.at";
+            string relay_tmp = (string)ReadConfig("/config/email/relay");
+            if (relay_tmp != null && relay_tmp != "")
+            {
+                relay = relay_tmp;
+            }
+            SmtpClient smtpClient = new SmtpClient(relay);
             smtpClient.UseDefaultCredentials = true; // Verwenden der Standardanmeldeinformationen
 
             // E-Mail senden
             smtpClient.Send(mail);
-            Console.WriteLine("[info] E-Mail wurde erfolgreich gesendet.");
+            Console.WriteLine($"[info] E-Mail wurde erfolgreich an \"{sendto}\" gesendet.");
 
         }
         catch (Exception ex)
         {
-            Console.WriteLine("Fehler beim Senden der E-Mail: " + ex.Message);
+            Console.WriteLine($"[error] Fehler beim Senden der E-Mail: " + ex.Message);
         }
 
     }
@@ -386,17 +453,25 @@ class Program
                 {
                     if (rule.IsInherited)
                     {
-                        explicitPermissionFoldersInherited.Add("\"" + folderPath + "\"");
+                        explicitPermissionFoldersUsersInherited.Add("\"" + folderPath + "\"");
                     }
                     else
                     {
-                        explicitPermissionFolders.Add("\"" + folderPath + "\"");
+                        explicitPermissionFoldersUsers.Add("\"" + folderPath + "\"");
                     }
                     explicitPermissionUsers.Add(identity);
                 }
 
                 if (groupList.Contains(identity))
                 {
+                    if (rule.IsInherited)
+                    {
+                        explicitPermissionFoldersGroupsInherited.Add("\"" + folderPath + "\"");
+                    }
+                    else
+                    {
+                        explicitPermissionFoldersGroups.Add("\"" + folderPath + "\"");
+                    }
                     explicitPermissionGroups.Add(identity);
                 }
 
@@ -424,6 +499,46 @@ class Program
     #endregion
 
     #region Helper Methods
+
+    /// <summary>
+    /// Read config from config.xml should be placed beside the executable
+    /// </summary>
+    static object ReadConfig(string elem)
+    {
+        string configFile = System.AppDomain.CurrentDomain.BaseDirectory + "config.xml";
+        XmlDocument doc = new XmlDocument();
+        doc.Load(configFile);
+        XmlNode node = doc.DocumentElement.SelectSingleNode(elem);
+        if (node != null)
+        {
+            string text = node.InnerText;
+            return text;
+        }
+        return null;
+    }
+
+    static List<string> ReadConfigList(string elem)
+    {
+        string configFile = System.AppDomain.CurrentDomain.BaseDirectory + "config.xml";
+        XmlDocument doc = new XmlDocument();
+        doc.Load(configFile);
+
+        // Liste für die Benutzernamen
+        List<string> userList = new List<string>();
+
+        // Wähle die entsprechenden Knoten
+        XmlNodeList nodeList = doc.DocumentElement.SelectNodes(elem);
+
+        if (nodeList != null)
+        {
+            foreach (XmlNode node in nodeList)
+            {
+                userList.Add(node.InnerText);
+            }
+        }
+
+        return userList;
+    }
 
     /// <summary>
     /// Create a list of users from active directory
