@@ -101,71 +101,43 @@ class Program
         string remoteComputer = "fileserver";
         ManagementScope scope = new ManagementScope($@"\\{remoteComputer}\root\cimv2");
 
-        try
+        // Verbindung zum Remote-Computer herstellen
+        scope.Connect();
+
+
+        string query = "SELECT Name, Path FROM Win32_Share";
+        ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery(query));
+        ManagementObjectCollection results = searcher.Get();
+
+        //Console.WriteLine("[info] Available shares on fileserver:");
+        //foreach (ManagementObject share in results) Console.WriteLine($"Share: {share["Name"]} - Path: {share["Path"]}"); 
+
+        var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString() == sharename);
+
+        if (foundShare != null)
         {
-            // Verbindung zum Remote-Computer herstellen
-            scope.Connect();
-            //Console.WriteLine($"[info] Connected to {remoteComputer}");
+            string shareName = foundShare["Name"].ToString();
+            string sharePath = foundShare["Path"].ToString();
 
-
-            string query = "SELECT Name, Path FROM Win32_Share";
-            ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery(query));
-            ManagementObjectCollection results = searcher.Get();
-
-            //Console.WriteLine("[info] Available shares on fileserver:");
-            foreach (ManagementObject share in results)
+                
+            Console.WriteLine($"[info] Found share: {shareName} with path: {sharePath}");
+            
+            try
             {
-                //Console.WriteLine($"Share: {share["Name"]} - Path: {share["Path"]}");
+                ProcessDirectory(sharename, outfilePath);
             }
-
-            var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString() == sharename);
-
-            if (foundShare != null)
-            {
-                string shareName = foundShare["Name"].ToString();
-                string sharePath = foundShare["Path"].ToString();
-
-                
-                Console.WriteLine($"[info] Found share: {shareName} with path: {sharePath}");
-                //ProcessDirectory(sharename, outfilePath);
-                
-
-                
-                try
-                {
-                    // ProcessDirectory kann Zugriff verweigert werden, also in try-catch
-                    ProcessDirectory(sharename, outfilePath);
-                }
-                catch (UnauthorizedAccessException ex)
-                {
-                    // Zugriff verweigert, aber das Skript bleibt nicht stehen
-                    Console.WriteLine($"[warning] Access denied when processing directory {sharename}: {ex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    // Generelle Fehlerbehandlung
-                    Console.WriteLine($"[error] An error occurred while processing the directory {sharename}: {ex.Message}");
-                }
-                
-
+            catch (UnauthorizedAccessException ex) {
+                //Console.WriteLine($"[warning] Test1: {ex}");
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine($"[warning] No shares found with name: {sharename}");
+                Console.WriteLine($"[warning] Test2: {ex}");
             }
 
         }
-        catch (UnauthorizedAccessException ex)
+        else
         {
-            Console.WriteLine($"[error] Access denied to {remoteComputer}: {ex.Message}");
-        }
-        catch (ManagementException ex)
-        {
-            Console.WriteLine($"[error] WMI query failed: {ex.Message}");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[error] An error occurred: {ex.Message}");
+            Console.WriteLine($"[warning] No shares found with name: {sharename}");
         }
 
         DateTime endDate = DateTime.Now;
@@ -193,21 +165,26 @@ class Program
             mail.Subject = shareNameForFile + " - CSV erstellt und abgelegt";
             mail.Body = $"{outfile} wurde erstellt und unter {outdir} abgelegt.\n\nStartzeit: {startDate}\nEndzeit: {endDate}\nAusführungsdauer: {executionTime}\nDateigröße: {fileSizeInKB:F2} KB\nAnzahl an Verzeichnissen: {numberOfFolders}\nAnzahl an Berechtigungen: {numberOfPermissions}";
 
-            mail.Body += "\n\nGruppen mit expliziten Berechtigungen:\n";
-            mail.Body += String.Join(Environment.NewLine, explicitPermissionGroups.Distinct());
+            string logText = String.Empty;
 
-            mail.Body += "\n\nAccounts mit expliziten Berechtigungen:\n";
-            mail.Body += String.Join(Environment.NewLine, explicitPermissionUsers.Distinct());
+            logText += $"Statistik für: {sharename}\n\nGruppen mit expliziten Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionGroups.Distinct());
 
-            mail.Body += "\n\nOrdner mit unterbrochenen (expliziten) Berechtigungen:\n";
-            mail.Body += String.Join(Environment.NewLine, explicitPermissionFolders.Distinct());
+            logText += "\n\nAccounts mit expliziten Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionUsers.Distinct());
 
-            mail.Body += "\n\nOrdner mit vererbten (expliziten) Berechtigungen:\n";
-            mail.Body += String.Join(Environment.NewLine, explicitPermissionFoldersInherited.Distinct());
+            logText += "\n\nOrdner mit unterbrochenen (expliziten) Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionFolders.Distinct());
 
-            
+            logText += "\n\nOrdner mit vererbten (expliziten) Berechtigungen:\n";
+            logText += String.Join(Environment.NewLine, explicitPermissionFoldersInherited.Distinct());
 
-            File.AppendAllText(logfilePath, mail.Body);
+            File.AppendAllText(logfilePath, logText);
+
+            Attachment attachment = new Attachment(logfilePath); // Datei anhängen
+            mail.Attachments.Add(attachment);
+
+            //File.AppendAllText(logfilePath, mail.Body);
 
             // SMTP Client erstellen
             SmtpClient smtpClient = new SmtpClient("relay.akm.at");
@@ -226,44 +203,73 @@ class Program
     }
 
     /// <summary>
+    /// Helper function to collect directories while some paths are non-accessible
+    /// </summary>
+    /// <param name="folderPath"></param>
+    /// <param name="allDirectories"></param>
+    static void GetDirectories(string folderPath, List<string> allDirectories)
+    {
+        try
+        {
+            // Hole alle Verzeichnisse im aktuellen Verzeichnis
+            string[] directories = Directory.GetDirectories(folderPath);
+
+            // Füge das aktuelle Verzeichnis der Liste hinzu
+            allDirectories.AddRange(directories);
+
+            // Gehe rekursiv durch jedes Unterverzeichnis
+            foreach (string directory in directories)
+            {
+                // Count folder we dont have permission!!!
+                numberOfFolders++;
+                GetDirectories(directory, allDirectories);
+            }
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // Ignoriere die UnauthorizedAccessException und gehe weiter
+            Console.WriteLine($"[error] Zugriff verweigert auf: {folderPath}");
+        }
+        catch (Exception ex)
+        {
+            // Behandle andere Ausnahmen (optional)
+            Console.WriteLine($"[warning] {ex.Message}");
+        }
+
+    }
+
+
+    /// <summary>
     /// Find all folders in a Share and find the ACLs
     /// </summary>
     /// <param name="folderPath"></param>
     /// <param name="outfilePath"></param>
     static void ProcessDirectory(string folderPath, string outfilePath)
     {
-        // Get all directories
-        string[] directories = Directory.GetDirectories(folderPath, "*", SearchOption.AllDirectories);
-        
-        int directoryCount = directories.Length;
-        numberOfFolders = directoryCount;
-        Console.WriteLine("[info] Found " + directoryCount + " directories");
 
-        foreach (string folder in directories)
+        List<string> allDirectories = new List<string>();
+
+        try
         {
-            //Console.WriteLine("[info] Processing folder " + folder);
-            //ProcessFolder(folder, outfilePath);
-
-            
-            try
-            {
-                // ProcessDirectory kann Zugriff verweigert werden, also in try-catch
-                ProcessFolder(folder, outfilePath);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                // Zugriff verweigert, aber das Skript bleibt nicht stehen
-                Console.WriteLine($"[warning] Access denied when processing directory {folder}: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                // Generelle Fehlerbehandlung
-                Console.WriteLine($"[error] An error occurred while processing the directory {folder}: {ex.Message}");
-            }
-            
-
+            // Starte das rekursive Durchsuchen der Verzeichnisse
+            GetDirectories(folderPath, allDirectories);
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Ein Fehler ist aufgetreten: {ex.Message}");
+        }
+
+        Console.WriteLine($"[info] Found {numberOfFolders} directories.");
+
+        // Zeige alle Verzeichnisse an, die aufgelistet wurden
+        foreach (var dir in allDirectories)
+        {
+            //Console.WriteLine(dir);
+            ProcessFolder(dir, outfilePath);
+        }
+
     }
+
 
     /// <summary>
     /// Get the ACLs of a specific folder
@@ -275,7 +281,6 @@ class Program
 
         try
         {
-
             DirectoryInfo directoryInfo = new DirectoryInfo(folderPath);
             DirectorySecurity directorySecurity = directoryInfo.GetAccessControl();
             AuthorizationRuleCollection acl = directorySecurity.GetAccessRules(true, true, typeof(NTAccount));
@@ -284,25 +289,30 @@ class Program
             {
                 string identity = rule.IdentityReference.Value;
 
-                //Console.WriteLine($"[info] Found identity {identity}");
-
+                // Skip ignored identities
                 if (ignoredNames.Contains(identity))
                 {
-                    //Console.WriteLine($"[info] Found {identity} in ignoredNames");
                     continue;
                 }
 
                 bool doContinue = false;
 
+                // Check for wildcard ignored patterns
                 foreach (var pattern in ignoredNamesWildcard)
                 {
-                    // Überprüfen, ob der Input-String zum Regex-Muster passt
                     if (Regex.IsMatch(identity, pattern))
                     {
                         doContinue = true;
+                        break;
                     }
                 }
 
+                if (doContinue)
+                {
+                    continue;
+                }
+
+                // Check for user/group specific permissions
                 if (userList.Contains(identity))
                 {
                     if (rule.IsInherited)
@@ -321,34 +331,23 @@ class Program
                     explicitPermissionGroups.Add(identity);
                 }
 
-                if (doContinue)
-                {
-                    continue;
-                }
-
+                // Output permissions information
                 string rights = rule.FileSystemRights.ToString();
                 bool isInherited = rule.IsInherited;
-
                 numberOfPermissions++;
 
-                // Output format: "Folder;Identity;Rights;IsInherited"
                 string outputString = $"\"{folderPath}\";{identity};{rights};{isInherited}";
-
-                //Console.WriteLine("[info] " + outputString);
-                //Console.WriteLine("[info] Output in " + outfilePath);
-
                 File.AppendAllText(outfilePath, outputString + Environment.NewLine);
             }
         }
         catch (UnauthorizedAccessException ex)
         {
-            // Zugriff verweigert, aber das Skript bleibt nicht stehen
-            Console.WriteLine($"[warning] Access denied when processing directory {folderPath}: {ex.Message}");
+            throw ex;
+            //Console.WriteLine($"[warning] Access denied when processing directory {folderPath}: {ex.Message}");
         }
         catch (Exception ex)
         {
-            // Generelle Fehlerbehandlung
-            Console.WriteLine($"[error] An error occurred while processing the directory {folderPath}: {ex.Message}");
+            Console.WriteLine($"[error] An error occurred when processing directory {folderPath}: {ex.Message}");
         }
     }
 
@@ -415,18 +414,6 @@ class Program
             }
             userList.Add("\n==================\n");
 
-            /*
-            // Ausgabe der gefundenen Benutzer
-            //Console.WriteLine("Users with objectClass 'user':");
-            foreach (var user in userList)
-            {
-                //Console.WriteLine(user);
-                File.AppendAllText(logfilePath, user + Environment.NewLine);
-            }
-
-            File.AppendAllText(logfilePath, Environment.NewLine);
-            */
-
         }
         catch (Exception ex)
         {
@@ -475,19 +462,6 @@ class Program
 
                 }
             }
-            groupList.Add("\n==================\n");
-
-            /*
-            // Ausgabe der gefundenen Benutzer
-            //Console.WriteLine("Users with objectClass 'user':");
-            foreach (var user in groupList)
-            {
-                //Console.WriteLine(user);
-                File.AppendAllText(logfilePath, user + Environment.NewLine);
-            }
-
-            File.AppendAllText(logfilePath, Environment.NewLine);
-            */
 
         }
         catch (Exception ex)
