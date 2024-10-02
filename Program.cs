@@ -17,6 +17,7 @@ using System.Reflection;
 using OfficeOpenXml;  // EPPlus Namespace
 using OfficeOpenXml.Style;
 using System.Drawing;
+using System.Data;
 
 class Program
 {
@@ -110,6 +111,9 @@ class Program
     /// </summary>
     public static ExcelPackage excelPackage = new ExcelPackage();
 
+    public static ExcelWorksheet overviewSheet = excelPackage.Workbook.Worksheets.Add("Overview");
+    public static int overviewSheetRowCounter = 1; // 1st row is header
+
     /// <summary>
     /// Sheet 3
     /// </summary>
@@ -190,6 +194,11 @@ class Program
         excelfilePath = outfilePath.Replace("csv", "xlsx");
         ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
+        overviewSheet.Cells[overviewSheetRowCounter++, 1].Value = "This is an overview";
+        overviewSheet.Cells[overviewSheetRowCounter, 1].Style.WrapText = true;
+        overviewSheet.Cells[overviewSheetRowCounter++, 1].Value = "There will be some information\nand instructions";
+        overviewSheet.Column(1).Width = 200;
+
         sheet1.Cells[sheet1RowCounter, 1].Value = "FolderPath";
         sheet1.Cells[sheet1RowCounter, 2].Value = "IdentityReference";
         sheet1.Cells[sheet1RowCounter, 3].Value = "FileSystemRights";
@@ -258,14 +267,19 @@ class Program
             remoteComputer = remoteComputer_tmp;
         }
 
+        //GetSharePermissions("\\\\" + remoteComputer, shareNameForFile);
+
         ManagementScope scope = new ManagementScope($@"\\{remoteComputer}\root\cimv2");
         scope.Connect();
+
+
+        
 
         /*
          * Find all shares
          */
-        string query = "SELECT Name, Path FROM Win32_Share";
-        ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery(query));
+        string query1 = "SELECT Name, Path FROM Win32_Share";
+        ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery(query1));
         Console.Write("[info] Ermittle verfügbare Shares.. ");
         ManagementObjectCollection results = searcher.Get();
         Console.ForegroundColor = ConsoleColor.Green;
@@ -291,6 +305,78 @@ class Program
             string found_sharePath = foundShare["Path"].ToString();
 
             Console.WriteLine($"[info] Share \"{found_shareName}\" gefunden. Pfad: \"{found_sharePath}\"");
+
+            // Get Share permissions
+            // WMI-Abfrage für die Freigaben (Share)
+
+            Console.WriteLine($"[debug] Looking for share {found_shareName} in WMI");
+
+            string escapedShareName = found_shareName.Replace("\\", "\\\\");
+
+            ObjectQuery query2 = new ObjectQuery($"SELECT * FROM Win32_Share WHERE name LIKE '{escapedShareName}'");
+            searcher = new ManagementObjectSearcher(scope, query2);
+
+            foreach (ManagementObject share in searcher.Get())
+            {
+
+                //Console.WriteLine($"Freigabe: {share["Name"]}");
+                //Console.WriteLine($"Pfad: {share["Path"]}");
+                //Console.WriteLine("Berechtigungen:");
+
+                try
+                {
+   
+                    DirectoryInfo dirInfo = new DirectoryInfo(share["Name"].ToString());
+                    DirectorySecurity dirSecurity = dirInfo.GetAccessControl();
+                    AuthorizationRuleCollection rules = dirSecurity.GetAccessRules(true, true, typeof(NTAccount));
+
+                    overviewSheetRowCounter++;
+                    overviewSheet.Cells[overviewSheetRowCounter, 1].Value = "Share Berechtigungen:";
+                    overviewSheet.Cells[overviewSheetRowCounter, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
+                    overviewSheet.Cells[overviewSheetRowCounter, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
+                    overviewSheetRowCounter++;
+
+                    foreach (FileSystemAccessRule rule in rules)
+                    {
+                        Console.WriteLine($"\t{rule.IdentityReference.Value}: {rule.AccessControlType}, {rule.FileSystemRights}");
+
+                        //overviewSheet.Cells[overviewSheetRowCounter, 1].Value = $"{rule.IdentityReference.Value}: {rule.AccessControlType}, {rule.FileSystemRights}";
+                        overviewSheet.Cells[overviewSheetRowCounter, 1].Value = $"{rule.IdentityReference.Value}: {rule.FileSystemRights}";
+                        
+                        overviewSheetRowCounter++;
+                    }
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    Console.WriteLine($"[error] Zugriff verweigert: {ex.Message}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[error] Fehler: {ex.Message}");
+                }
+
+                /*
+                try { 
+                // WMI-Abfrage für die Berechtigungen
+                ManagementBaseObject securityDescriptor = share.InvokeMethod("GetSecurityDescriptor", null, null);
+                ManagementBaseObject descriptor = (ManagementBaseObject)securityDescriptor["Descriptor"];
+                ManagementBaseObject[] dacl = (ManagementBaseObject[])descriptor["DACL"];
+
+                foreach (var ace in dacl)
+                {
+                    var trustee = (ManagementBaseObject)ace["Trustee"];
+                    string accountName = (string)trustee["Name"];
+                    string domainName = (string)trustee["Domain"];
+                    int accessMask = (int)ace["AccessMask"];
+
+                    // Die AccessMask beschreibt die Berechtigungen
+                    Console.WriteLine($"{domainName}\\{accountName}: AccessMask = {accessMask}");
+                }
+
+                } catch(ManagementException me) { Console.WriteLine("[error] " + me.Message); }
+                */
+
+            }
 
             try
             {
