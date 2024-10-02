@@ -12,6 +12,7 @@ using System.DirectoryServices;
 using System.DirectoryServices.AccountManagement;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography.X509Certificates;
+using System.Xml;
 
 class Program
 {
@@ -63,6 +64,13 @@ class Program
     /// <param name="args"></param>
     static void Main(string[] args)
     {
+
+        /*
+        string sendAs = (string)ReadConfig("/config/general/servername");
+        Console.WriteLine(sendAs);
+        return; 
+        */
+
         if (args.Length == 0)
         {
             Console.WriteLine("Please provide a sharename as argument.");
@@ -73,6 +81,11 @@ class Program
         string sharename = args[0];
         string year = DateTime.Now.ToString("yyyy");
         string outdir = $@"C:\Scripts\Berechtigungsaudit\Shares\{year}";
+        string outdir_tmp = (string)ReadConfig("/config/general/outdir");
+        if (outdir_tmp != null && outdir_tmp != "")
+        {
+            outdir = outdir_tmp;
+        }
 
         if (!Directory.Exists(outdir))
         {
@@ -110,9 +123,24 @@ class Program
          * Connect to fileserver
          */
         string remoteComputer = "fileserver";
-        ManagementScope scope = new ManagementScope($@"\\{remoteComputer}\root\cimv2");
-        scope.Connect();
+        
+        string t = (string)ReadConfig("/config/general/servername");
+        if (t != null && t != "")
+        {
+            remoteComputer = t;
+        }
+        
+        Console.WriteLine("[info] Trying to connect to " + remoteComputer);
 
+        ManagementScope scope = new ManagementScope($@"\\{remoteComputer}\root\cimv2");
+        try
+        {
+            scope.Connect();
+        } catch(Exception e)
+        {
+            Console.WriteLine(e.Message);
+            return;
+        }
         /*
          * Find all shares
          */
@@ -179,11 +207,25 @@ class Program
          */
         try
         {
-           
+
+            string sendto = "meldungen.ber-audit.gbi@akm.at";
+            string sendfrom = $"Berechtigungsaudit@{Environment.MachineName}.akm.at";
+
+            string mail_tmp = (string)ReadConfig("/config/email/sendto");
+            if (mail_tmp != null && mail_tmp != "")
+            {
+                sendto = mail_tmp;
+            }
+            mail_tmp = (string)ReadConfig("/config/email/sendfrom");
+            if (mail_tmp != null && mail_tmp != "")
+            {
+                sendfrom = $"" + mail_tmp;
+            }
+
             MailMessage mail = new MailMessage();
-            mail.From = new MailAddress($"Berechtigungsaudit <Berechtigungsaudit@{Environment.MachineName}.akm.at>");
+            mail.From = new MailAddress(sendfrom);
             //mail.To.Add("meldungen.ber-audit.gbi@akm.at");
-            mail.To.Add("meldungen.ber-audit.gbi@akm.at");
+            mail.To.Add(sendto);
             mail.Subject = shareNameForFile + " - CSV erstellt und abgelegt";
             mail.Body = $"{outfile} wurde erstellt und unter {outdir} abgelegt.\n\n";
 
@@ -224,7 +266,13 @@ class Program
             //File.AppendAllText(logfilePath, mail.Body);
 
             // SMTP Client erstellen
-            SmtpClient smtpClient = new SmtpClient("relay.akm.at");
+            string relay = "relay.akm.at";
+            string relay_tmp = (string)ReadConfig("/config/email/relay");
+            if (relay_tmp != null && relay_tmp != "")
+            {
+                relay = relay_tmp;
+            }
+            SmtpClient smtpClient = new SmtpClient(relay);
             smtpClient.UseDefaultCredentials = true; // Verwenden der Standardanmeldeinformationen
 
             // E-Mail senden
@@ -327,9 +375,18 @@ class Program
                 string identity = rule.IdentityReference.Value;
 
                 // Skip ignored identities
+                // ToDo: Distinct between ignored and standard accounts
                 if (ignoredNames.Contains(identity))
                 {
                     ignoredAccountsList.Add(identity);
+                    if (rule.IsInherited)
+                    {
+                        explicitPermissionFoldersInherited.Add(folderPath);
+                    }
+                    else
+                    {
+                        explicitPermissionFolders.Add(folderPath);
+                    }
                     continue;
                 }
 
@@ -341,6 +398,14 @@ class Program
                     if (Regex.IsMatch(identity, pattern))
                     {
                         ignoredAccountsList.Add(identity);
+                        if (rule.IsInherited)
+                        {
+                            explicitPermissionFoldersInherited.Add(folderPath);
+                        }
+                        else
+                        {
+                            explicitPermissionFolders.Add(folderPath);
+                        }
                         doContinue = true;
                         break;
                     }
@@ -393,6 +458,23 @@ class Program
     #endregion
 
     #region Helper Methods
+
+    /// <summary>
+    /// Read config from config.xml should be placed beside the executable
+    /// </summary>
+    static object ReadConfig(string elem)
+    {
+        string configFile = System.AppDomain.CurrentDomain.BaseDirectory + "config.xml";
+        XmlDocument doc = new XmlDocument();
+        doc.Load(configFile);
+        XmlNode node = doc.DocumentElement.SelectSingleNode(elem);
+        if (node != null)
+        {
+            string text = node.InnerText;
+            return text;
+        }
+        return null;
+    }
 
     /// <summary>
     /// Create a list of users from active directory
