@@ -32,14 +32,19 @@ class Program
 
     static List<string> explicitPermissionUsers = new List<string>();
     static List<string> explicitPermissionFolders = new List<string>();
+    static List<string> userList = new List<string>();
 
     static void Main(string[] args)
     {
+
         if (args.Length == 0)
         {
             Console.WriteLine("Please provide a sharename as argument.");
             return;
         }
+
+        CreateUserList();
+        //return;
 
         string sharename = args[0];
         string year = DateTime.Now.ToString("yyyy");
@@ -185,6 +190,7 @@ class Program
         {
             string identity = rule.IdentityReference.Value;
 
+            /*
             // AD Abfrage
             string[] idt = identity.Split('\\');
 
@@ -229,12 +235,10 @@ class Program
                                 explicitPermissionFolders.Add(folderPath);
                             }
                         }
-                        /*
                         else
                         {
                             Console.WriteLine($"AD object with SamAccountName \"{idt1}\" not found.");
                         }
-                        */
                     }
                     catch (Exception ex)
                     {
@@ -243,7 +247,23 @@ class Program
                 }
 
             }
-            
+            */
+
+            Console.WriteLine($"[debug] Found identity {identity}");
+
+            if (ignoredNames.Contains(identity))
+            //if (!userList.Any(u => u.Equals(identityParts[1].Trim(), StringComparison.OrdinalIgnoreCase)))
+            {
+                Console.WriteLine($"[debug] SKIPPING {identity}");
+                continue;
+            }
+
+            if(userList.Contains(identity))
+            {
+                explicitPermissionUsers.Add(identity);
+                explicitPermissionFolders.Add(folderPath);
+            }
+
             string rights = rule.FileSystemRights.ToString();
             bool isInherited = rule.IsInherited;
 
@@ -258,4 +278,89 @@ class Program
             File.AppendAllText(outfilePath, outputString + Environment.NewLine);
         }
     }
+
+    static void CreateUserList()
+    {
+        string ldapPath = "LDAP://d2000.local";
+
+        try
+        {
+            // Liste, um die SamAccountNames zu speichern
+            List<string> userList = new List<string>();
+
+            // AD-Verbindung herstellen
+            DirectoryEntry entry = new DirectoryEntry(ldapPath);
+            DirectorySearcher searcher = new DirectorySearcher(entry);
+
+            // Suche nach Objekten, die den objectClass "user" oder "group" haben
+            searcher.Filter = "(|(objectClass=user)(objectClass=group))"; // Filter für alle Objekte
+            searcher.PageSize = 100000; // Optional: erhöht die Abfrageleistung bei großen AD-Strukturen
+            searcher.PropertiesToLoad.Add("sAMAccountName");  // Lade SamAccountName
+            searcher.PropertiesToLoad.Add("extensionAttribute10");  // Lade das extensionAttribute10
+            searcher.PropertiesToLoad.Add("objectClass");  // Lade objectClass
+
+            // Durchlaufe alle Suchergebnisse
+            foreach (SearchResult result in searcher.FindAll())
+            {
+                DirectoryEntry userEntry = result.GetDirectoryEntry();
+
+                // Prüfen, ob "sAMAccountName" vorhanden ist
+                if (userEntry.Properties.Contains("sAMAccountName"))
+                {
+
+                    //Console.WriteLine("SAMAccountName OK");
+
+                    // Hole den SamAccountName
+                    string samAccountName = userEntry.Properties["sAMAccountName"].Value?.ToString();
+
+                    // Prüfen, ob "extensionAttribute10" vorhanden ist
+                    string extensionAttribute10 = null;
+                    if (userEntry.Properties.Contains("extensionAttribute10"))
+                    {
+                        extensionAttribute10 = userEntry.Properties["extensionAttribute10"].Value?.ToString();
+                    }
+                    //Console.WriteLine("extAttribute OK");
+
+                    // Prüfen, ob "objectClass" vorhanden ist
+                    bool isGroup = false;
+                    if (userEntry.Properties.Contains("objectClass"))
+                    {
+                        foreach (var objClass in userEntry.Properties["objectClass"])
+                        {
+                            if (objClass.ToString().Equals("group", StringComparison.OrdinalIgnoreCase))
+                            {
+                                isGroup = true;
+                                break;
+                            }
+                        }
+                        //Console.WriteLine("objectClass OK");
+                    }
+
+                    //Console.WriteLine($"{samAccountName} - {extensionAttribute10} -  {isGroup}");
+
+                    // Füge den Benutzer zur Liste hinzu, wenn extensionAttribute10 "User" ist oder es eine Gruppe ist
+                    if ((extensionAttribute10 != null && extensionAttribute10 == "User") || isGroup)
+                    {
+                        string n = "D2000\\" + samAccountName;
+                        userList.Add(n.Trim());
+                    }
+                }
+            }
+
+            // Ausgabe der gefundenen Benutzer
+            Console.WriteLine("Users with objectClass 'user' or 'group':");
+            foreach (var user in userList)
+            {
+                Console.WriteLine(user);
+            }
+
+            // Hier kannst du mit der Liste weiterarbeiten
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Exception: {ex.Message}");
+        }
+    }
+
+
 }
