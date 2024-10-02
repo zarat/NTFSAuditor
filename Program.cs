@@ -14,54 +14,130 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography.X509Certificates;
 using System.Xml;
 using System.Reflection;
+using OfficeOpenXml;  // EPPlus Namespace
+using OfficeOpenXml.Style;
+using System.Drawing;
 
 class Program
 {
 
     #region Parameters
 
+    /// <summary>
+    /// For percentage display
+    /// </summary>
     public static int numberOfFolders, numberOfPermissions = 0;
 
+    /// <summary>
+    /// List of AD users generated at start to compare
+    /// </summary>
     public static List<string> userList = new List<string>();
+
+    /// <summary>
+    /// List of AD groups generated at start to compare
+    /// </summary>
     public static List<string> groupList = new List<string>();
+
+    /// <summary>
+    /// A list of found(!) accounts that are configured to ignore
+    /// users and groups
+    /// Are shown in statistics (accounts with explicit permissions)
+    /// </summary>
     public static List<string> ignoredAccountsList = new List<string>();
 
+    /// <summary>
+    /// Path for output file
+    /// </summary>
     public static string outfilePath = String.Empty;
+
+    /// <summary>
+    /// Path for log file
+    /// </summary>
     public static string logfilePath = String.Empty;
 
-    /*
-    static List<string> ignoredNames = new List<string>
-    {
-        @"NT-AUTORITÄT\SYSTEM",
-        @"NT AUTHORITY\SYSTEM",
-        @"BUILTIN\Administrators",
-        @"BUILTIN\Users",
-        @"VORDEFINIERT\Administratoren",
-        @"VORDEFINIERT\Benutzer",
-        @"D2000\Administrator",
-        @"D2000\Domänen-Admins",
-        @"D2000\named_admins",
-        @"D2000\folioadmin"
-    };
-    */
+    /// <summary>
+    /// Path for excel file
+    /// </summary>
+    public static string excelfilePath = String.Empty;
+
+    /// <summary>
+    /// Read from config.xml to set mode (all or only non-inherited)
+    /// </summary>
+    public static int showOnlyBroken = 0;
+
+    /// <summary>
+    /// Accounts to ignore, read from config.xml
+    /// </summary>
     public static List<string> ignoredNames = ReadConfigList("//ignoredAccounts/account");
 
-    /*
-    static List<string> ignoredNamesWildcard = new List<string>
-    {
-        @"D2000\\s_.*",
-        @"D2000\\dom_.*",
-        @"D2000\\admin_.*"
-    };
-    */
+    /// <summary>
+    /// Accounts to ignore (by wildcard), read from config.xml
+    /// </summary>
     public static List<string> ignoredNamesWildcard = ReadConfigList("//ignoredAccountsWildcard/account");
 
+    /// <summary>
+    /// Unique list of user with explicit permissions
+    /// </summary>
     static List<string> explicitPermissionUsers = new List<string>();
+
+    /// <summary>
+    /// Unique list of groups with explicit permissions
+    /// </summary>
     static List<string> explicitPermissionGroups = new List<string>();
+
+    /// <summary>
+    /// Unique list of folders with explicit permissions for users
+    /// </summary>
     static List<string> explicitPermissionFoldersUsers = new List<string>();
+
+    /// <summary>
+    /// Unique list of folders with explicit permissions for groups
+    /// </summary>
     static List<string> explicitPermissionFoldersGroups = new List<string>();
+
+    /// <summary>
+    /// List of folders with explicit non-inherited permissions for users
+    /// </summary>
     static List<string> explicitPermissionFoldersUsersInherited = new List<string>();
+
+    /// <summary>
+    /// List of folders with explicit non-inherited permissions for groups
+    /// </summary>
     static List<string> explicitPermissionFoldersGroupsInherited = new List<string>();
+
+    /// <summary>
+    /// The generated excel file
+    /// </summary>
+    public static ExcelPackage excelPackage = new ExcelPackage();
+
+    /// <summary>
+    /// Sheet 3
+    /// </summary>
+    public static ExcelWorksheet sheet3 = excelPackage.Workbook.Worksheets.Add("All Permissions");
+    public static int sheet3RowCounter = 1; // 1st row is header
+
+    /// <summary>
+    /// Sheet 4
+    /// </summary>
+    public static ExcelWorksheet sheet4 = excelPackage.Workbook.Worksheets.Add("Group Member");
+    public static int sheet4RowCounter = 1; // 1st row is header
+
+    /// <summary>
+    /// Sheet 1
+    /// </summary>
+    public static ExcelWorksheet sheet1 = excelPackage.Workbook.Worksheets.Add("Explicit User Permissions");
+    public static int sheet1RowCounter = 1; // 1st row is header
+
+    /// <summary>
+    /// Sheet 2
+    /// </summary>
+    public static ExcelWorksheet sheet2 = excelPackage.Workbook.Worksheets.Add("Explicit Group Permissions");
+    public static int sheet2RowCounter = 1; // 1st row is header
+
+    /// <summary>
+    /// 
+    /// </summary>
+    static List<string> recursiveGroupsToResolve = new List<string>();
 
     #endregion
 
@@ -82,7 +158,6 @@ class Program
             return;
         }
 
-
         string sharename = args[0];
         string year = DateTime.Now.ToString("yyyy");
         string outdir = $@"C:\Scripts\Berechtigungsaudit\Shares\{year}";
@@ -90,6 +165,12 @@ class Program
         if (outdir_tmp != null && outdir_tmp != "")
         {
             outdir = outdir_tmp;
+        }
+
+        int showOnlyBroken_tmp = Int32.Parse((string)ReadConfig("/config/general/showonlybroken"));
+        if (showOnlyBroken_tmp.GetType() == typeof(int))
+        {
+            showOnlyBroken = showOnlyBroken_tmp;
         }
 
         if (!Directory.Exists(outdir))
@@ -102,6 +183,48 @@ class Program
         string outfile = $"{shareNameForFile}_ntfs_{datenow}.csv";
         outfilePath = Path.Combine(outdir, outfile);
         logfilePath = outfilePath.Replace("csv", "log");
+
+        /*
+         * Create excel spreadsheet
+         */
+        excelfilePath = outfilePath.Replace("csv", "xlsx");
+        ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+
+        sheet1.Cells[sheet1RowCounter, 1].Value = "FolderPath";
+        sheet1.Cells[sheet1RowCounter, 2].Value = "IdentityReference";
+        sheet1.Cells[sheet1RowCounter, 3].Value = "FileSystemRights";
+        sheet1.Cells[sheet1RowCounter, 4].Value = "IsInherited";
+        sheet1RowCounter++;
+
+        // set column width
+        sheet1.Column(1).Width = 50;
+        sheet1.Column(2).Width = 50;
+        sheet1.Column(3).Width = 50;
+        sheet1.Column(4).Width = 50;
+
+        sheet2.Cells[sheet2RowCounter, 1].Value = "FolderPath";
+        sheet2.Cells[sheet2RowCounter, 2].Value = "IdentityReference";
+        sheet2.Cells[sheet2RowCounter, 3].Value = "FileSystemRights";
+        sheet2.Cells[sheet2RowCounter, 4].Value = "IsInherited";
+        sheet2RowCounter++;
+
+        // set column width
+        sheet2.Column(1).Width = 50;
+        sheet2.Column(2).Width = 50;
+        sheet2.Column(3).Width = 50;
+        sheet2.Column(4).Width = 50;
+
+        sheet3.Cells[sheet3RowCounter, 1].Value = "FolderPath";
+        sheet3.Cells[sheet3RowCounter, 2].Value = "IdentityReference";
+        sheet3.Cells[sheet3RowCounter, 3].Value = "FileSystemRights";
+        sheet3.Cells[sheet3RowCounter, 4].Value = "IsInherited";
+        sheet3RowCounter++;
+
+        // set column width
+        sheet3.Column(1).Width = 50;
+        sheet3.Column(2).Width = 50;
+        sheet3.Column(3).Width = 50;
+        sheet3.Column(4).Width = 50;
 
         /*
          * Create lists of users and groups for comparision
@@ -200,6 +323,8 @@ class Program
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"[info] Ausführungsdauer: \"{executionTime}\"");
         Console.ResetColor();
+
+        GenerateGroupMember();
 
         //FileInfo fileInfo = new FileInfo(outdir + "\\" + outfile);
         //long fileSizeInBytes = fileInfo.Length;
@@ -311,6 +436,25 @@ class Program
             Console.WriteLine($"[error] Fehler beim Senden der E-Mail: " + ex.Message);
         }
 
+
+        // ToDo
+        ResolveRecursiveGroups();
+
+        FileInfo fi = new FileInfo(excelfilePath);
+        excelPackage.SaveAs(fi);
+
+        Console.Write($"[info] Excel Mappe wird aufbereitet.. ");
+
+        UpdateGroupReferences("All Permissions", "Group Member");
+        //UpdateGroupReferences("Explicit User Permissions", "Group Member");
+        UpdateGroupReferences("Explicit Group Permissions", "Group Member");
+
+        
+
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.Write("OK!");
+        Console.ResetColor();
+
     }
 
     /// <summary>
@@ -352,7 +496,6 @@ class Program
         }
 
     }
-
 
     /// <summary>
     /// Find all folders in a Share and find the ACLs
@@ -403,7 +546,6 @@ class Program
         //Console.WriteLine("Done");
 
     }
-
 
     /// <summary>
     /// Get the ACLs of a specific folder
@@ -458,6 +600,18 @@ class Program
                     else
                     {
                         explicitPermissionFoldersUsers.Add("\"" + folderPath + "\"");
+
+                        if (1 == 1)
+                        {
+                            string outputString_user = $"\"{folderPath}\";{identity};{rule.FileSystemRights.ToString()};{rule.IsInherited}";
+                            File.AppendAllText(outfilePath, outputString_user + Environment.NewLine);
+                            sheet1.Cells[sheet1RowCounter, 1].Value = folderPath;
+                            sheet1.Cells[sheet1RowCounter, 2].Value = identity;
+                            sheet1.Cells[sheet1RowCounter, 3].Value = rule.FileSystemRights.ToString();
+                            sheet1.Cells[sheet1RowCounter, 4].Value = rule.IsInherited;
+                            sheet1RowCounter++;
+                        }
+
                     }
                     explicitPermissionUsers.Add(identity);
                 }
@@ -471,6 +625,17 @@ class Program
                     else
                     {
                         explicitPermissionFoldersGroups.Add("\"" + folderPath + "\"");
+
+                        if (1 == 1) { 
+                            string outputString_group = $"\"{folderPath}\";{identity};{rule.FileSystemRights.ToString()};{rule.IsInherited}";
+                            File.AppendAllText(outfilePath, outputString_group + Environment.NewLine);
+                            sheet2.Cells[sheet2RowCounter, 1].Value = folderPath;
+                            sheet2.Cells[sheet2RowCounter, 2].Value = identity;
+                            sheet2.Cells[sheet2RowCounter, 3].Value = rule.FileSystemRights.ToString();
+                            sheet2.Cells[sheet2RowCounter, 4].Value = rule.IsInherited;
+                            sheet2RowCounter++;
+                        }
+
                     }
                     explicitPermissionGroups.Add(identity);
                 }
@@ -480,8 +645,16 @@ class Program
                 bool isInherited = rule.IsInherited;
                 numberOfPermissions++;
 
-                string outputString = $"\"{folderPath}\";{identity};{rights};{isInherited}";
-                File.AppendAllText(outfilePath, outputString + Environment.NewLine);
+                if (0 == 0)
+                {
+                    string outputString = $"\"{folderPath}\";{identity};{rights};{isInherited}";
+                    File.AppendAllText(outfilePath, outputString + Environment.NewLine);
+                    sheet3.Cells[sheet3RowCounter, 1].Value = folderPath;
+                    sheet3.Cells[sheet3RowCounter, 2].Value = identity;
+                    sheet3.Cells[sheet3RowCounter, 3].Value = rule.FileSystemRights.ToString();
+                    sheet3.Cells[sheet3RowCounter, 4].Value = rule.IsInherited;
+                    sheet3RowCounter++;
+                }
             }
         }
         catch (UnauthorizedAccessException ex)
@@ -517,6 +690,11 @@ class Program
         return null;
     }
 
+    /// <summary>
+    /// Read a list from config.xml
+    /// </summary>
+    /// <param name="elem"></param>
+    /// <returns></returns>
     static List<string> ReadConfigList(string elem)
     {
         string configFile = System.AppDomain.CurrentDomain.BaseDirectory + "config.xml";
@@ -666,6 +844,281 @@ class Program
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine("OK!");
         Console.ResetColor();
+    }
+
+    /// <summary>
+    /// List all groups and their members in a separate sheet we can link to
+    /// </summary>
+    static void GenerateGroupMember()
+    {
+
+        int rowIndex = 1; 
+
+        foreach (string group in explicitPermissionGroups.Distinct())
+        {
+
+            //Console.WriteLine($"[info] Writing {group}");
+
+            // Setze den Gruppennamen als Spaltenüberschrift
+            sheet4.Cells[rowIndex, 1].Value = group;
+
+            // Set background color
+            sheet4.Cells[rowIndex, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
+            sheet4.Cells[rowIndex, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
+
+            // set column width
+            sheet4.Column(1).Width = 50;
+
+            rowIndex++;
+
+            // Hole die Mitglieder der Gruppe
+            List<string> members = GetGroupMembers(group);
+
+            // Füge die Mitglieder unter der Spaltenüberschrift ein
+            foreach(string member in members)
+            {
+                sheet4.Cells[rowIndex, 1].Value = member;
+
+                // ToDo
+                if (IsUserAGroup(member))
+                {
+
+                    recursiveGroupsToResolve.Add(member);
+
+                    sheet4.Cells[rowIndex, 2].Value = "Group";
+
+                }
+
+                rowIndex++;
+            }
+
+            rowIndex++; // Leere Zeile zwischen Gruppen
+
+        }
+    }
+
+    /// <summary>
+    /// Check if an account is a user or a group
+    /// </summary>
+    /// <param name="accountName"></param>
+    /// <returns></returns>
+    static bool IsUserAGroup(string accountName)
+    {
+
+        using (PrincipalContext context = new PrincipalContext(ContextType.Domain, "d2000.local"))
+        {
+
+            UserPrincipal user = UserPrincipal.FindByIdentity(context, accountName);
+
+            GroupPrincipal group = GroupPrincipal.FindByIdentity(context, accountName);
+
+            if (user != null)
+            {
+                return false; 
+            }
+            else if (group != null)
+            {
+                return true; 
+            }
+
+            return false;
+        }
+
+    }
+
+    /// <summary>
+    /// Update cells with hyperlink
+    /// 
+    /// param "src" - Where the hyperlinks are inserted
+    /// param "target" - Where the hyperlinks link to
+    /// </summary>
+    /// <param name="src">Where the hyperlinks are inserted</param>
+    /// <param name="target">Where the hyperlinks link to</param>
+    static void UpdateGroupReferences(string src, string target)
+    {
+        // Pfad zur Excel-Datei
+        string filePath = excelfilePath;
+
+        // Öffne die vorhandene Excel-Datei
+        FileInfo file = new FileInfo(filePath);
+        using (var package = new ExcelPackage(file))
+        {
+            // Hole das Arbeitsblatt, das die Gruppenreferenzen braucht (z.B. "AnotherSheet")
+            // All Permissions
+            var targetWorksheet = package.Workbook.Worksheets[src];
+
+            // Hole das Gruppen-Arbeitsblatt
+            // Group Member
+            var groupWorksheet = package.Workbook.Worksheets[target];
+
+            int row = 2; // Starte bei Zeile 2 (angenommen, Zeile 1 hat Überschriften)
+
+            while (targetWorksheet.Cells[row, 2].Value != null) // Durchlaufe die Zeilen, bis keine Daten mehr vorhanden sind
+            {
+
+                string groupName = targetWorksheet.Cells[row, 2].Value.ToString();
+
+                //Console.WriteLine($"[debug] Found group {groupName} in AllPermissions");
+
+                // Finde die Zeile im "Group Members" Sheet, wo der Gruppennamen steht
+                for (int groupRow = 1; groupRow <= groupWorksheet.Dimension.End.Row; groupRow++)
+                {
+
+                    //Console.WriteLine($"[debug] Found group {groupWorksheet.Cells[groupRow, 2].Value} in Group Member");
+
+                    if (groupWorksheet.Cells[groupRow, 1].Value != null && groupWorksheet.Cells[groupRow, 1].Value.ToString() == groupName)
+                    {
+                        // Setze die Referenz auf die Gruppe
+                        // Console.WriteLine($"[debug] Updating {groupName} in AllPermissions to reference group {groupWorksheet.Cells[groupRow, 1].Value} in Group Member");
+                        
+                        string cellReference = $"=HYPERLINK(\"#'{target}'!A{groupRow}\",\"{groupName}\")";
+                        
+                        targetWorksheet.Cells[row, 2].Formula = cellReference;
+                        break;
+                    }
+                }
+
+                row++;
+            }
+
+            // Speichere die Änderungen
+            package.Save();
+        }
+    }
+
+    /// <summary>
+    /// Get all the members of a group
+    /// </summary>
+    /// <param name="groupName"></param>
+    /// <returns></returns>
+    static List<string> GetGroupMembers(string groupName)
+    {
+        List<string> membersList = new List<string>();
+        try
+        {
+            DirectoryEntry entry = new DirectoryEntry("LDAP://DC=d2000,DC=local");
+            DirectorySearcher searcher = new DirectorySearcher(entry);
+
+            //Console.WriteLine($"[info] Looking up group {groupName}");
+
+            groupName = groupName.Replace("D2000\\", "");
+
+            // Suche nach der Gruppe mit dem angegebenen Namen
+            searcher.Filter = $"(&(objectClass=group)(cn={groupName}))";
+            searcher.PropertiesToLoad.Add("member");
+
+            SearchResult result = searcher.FindOne();
+
+            if (result != null)
+            {
+                // Hole alle Mitglieder der Gruppe
+                var members = result.Properties["member"];
+
+                foreach (var member in members)
+                {
+                    //membersList.Add(member.ToString());
+                    //membersList.Add(ExtractCnFromDn(member.ToString()));
+                    string samAccountName = GetSamAccountName(member.ToString());
+                    string samAccountNameToSearch = "D2000\\" + samAccountName;
+
+                    // Skip ignored identities
+                    if (ignoredNames.Contains(samAccountNameToSearch))
+                    {
+                        continue;
+                    }
+
+                    bool doContinue = false;
+
+                    // Check for wildcard ignored patterns
+                    foreach (var pattern in ignoredNamesWildcard)
+                    {
+                        if (Regex.IsMatch(samAccountNameToSearch, pattern))
+                        {
+                            doContinue = true;
+                            break;
+                        }
+                    }
+
+                    if (doContinue)
+                    {
+                        continue;
+                    }
+
+                    membersList.Add(samAccountName);
+                    
+                }
+            }
+            else
+            {
+                Console.WriteLine($"[error] Group {groupName} not found.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[error]Error fetching group members: {ex.Message}");
+        }
+
+        return membersList;
+    }
+
+    /// <summary>
+    /// Get the SAMAccountName by distinguishedName
+    /// </summary>
+    /// <param name="distinguishedName"></param>
+    /// <returns></returns>
+    static string GetSamAccountName(string distinguishedName)
+    {
+
+        //Console.WriteLine($"[debug] Looking up user {distinguishedName}");
+
+        try
+        {
+            using (DirectoryEntry memberEntry = new DirectoryEntry($"LDAP://{distinguishedName}"))
+            {
+                // sAMAccountName aus den Eigenschaften des Mitglieds holen
+                object samAccountNameObj = memberEntry.Properties["sAMAccountName"].Value;
+                
+                //Console.WriteLine($"[debug] Resolved {samAccountNameObj.ToString()}");
+
+                return samAccountNameObj != null ? samAccountNameObj.ToString() : null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[error]Error fetching sAMAccountName for {distinguishedName}: {ex.Message}");
+            return null;
+        }
+    }
+
+    static void ResolveRecursiveGroups()
+    {
+        
+        int lastRow = sheet4.Dimension.End.Row;
+
+        lastRow += 2;
+
+        foreach (string v in recursiveGroupsToResolve.Distinct())
+        {
+
+            sheet4.Cells[lastRow, 1].Value = "D2000\\" + v;
+            // Set background color
+            sheet4.Cells[lastRow, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
+            sheet4.Cells[lastRow, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
+
+            lastRow++;
+
+            List<string> tmp = GetGroupMembers("D2000\\" + v);
+
+            foreach(string u in tmp)
+            {
+                sheet4.Cells[lastRow, 1].Value = u;
+                lastRow++;
+            }
+
+            lastRow++;
+
+        }
+
     }
 
     #endregion
