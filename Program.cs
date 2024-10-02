@@ -22,6 +22,7 @@ class Program
 
     public static List<string> userList = new List<string>();
     public static List<string> groupList = new List<string>();
+    public static List<string> ignoredAccountsList = new List<string>();
 
     public static string outfilePath = String.Empty;
     public static string logfilePath = String.Empty;
@@ -84,10 +85,17 @@ class Program
         outfilePath = Path.Combine(outdir, outfile);
         logfilePath = outfilePath.Replace("csv", "log");
         
+        /*
+         * Create lists of users and groups for comparision
+         */
         CreateUserList();
         CreateGroupList();
 
+        /*
+         * Delete existing files
+         */
         if (File.Exists(outfilePath)) { File.Delete(outfilePath); }
+        if (File.Exists(logfilePath)) { File.Delete(logfilePath); }
 
         string outputString = "FolderPath;IdentityReference;FileSystemRights;IsInherited";
         File.AppendAllText(outfilePath, outputString + Environment.NewLine);
@@ -98,33 +106,44 @@ class Program
         Console.WriteLine($"[info] Starting at \"{startDate}\"");
         Console.ResetColor();
 
+        /*
+         * Connect to fileserver
+         */
         string remoteComputer = "fileserver";
         ManagementScope scope = new ManagementScope($@"\\{remoteComputer}\root\cimv2");
-
-        // Verbindung zum Remote-Computer herstellen
         scope.Connect();
 
-
+        /*
+         * Find all shares
+         */
         string query = "SELECT Name, Path FROM Win32_Share";
         ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery(query));
         ManagementObjectCollection results = searcher.Get();
 
+        /*
+         * List all shares
+         */
         //Console.WriteLine("[info] Available shares on fileserver:");
         //foreach (ManagementObject share in results) Console.WriteLine($"Share: {share["Name"]} - Path: {share["Path"]}"); 
 
-        var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString() == sharename);
+        /*
+         * Find the corresponding share
+         */
+        //var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString() == sharename);
+        var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString().ToLower() == "\\\\fileserver\\" + sharename.ToLower());
 
+        // Todo: Error code when no share was found
         if (foundShare != null)
         {
-            string shareName = foundShare["Name"].ToString();
-            string sharePath = foundShare["Path"].ToString();
+            string found_shareName = foundShare["Name"].ToString();
+            string found_sharePath = foundShare["Path"].ToString();
 
                 
-            Console.WriteLine($"[info] Found share: {shareName} with path: {sharePath}");
+            Console.WriteLine($"[info] Found share: {found_shareName} with path: {found_sharePath}");
             
             try
             {
-                ProcessDirectory(sharename, outfilePath);
+                ProcessDirectory(found_shareName, outfilePath);
             }
             catch (UnauthorizedAccessException ex) {
                 //Console.WriteLine($"[warning] Test1: {ex}");
@@ -137,7 +156,7 @@ class Program
         }
         else
         {
-            Console.WriteLine($"[warning] No shares found with name: {sharename}");
+            Console.WriteLine($"[warning] No shares found matching: {sharename}");
         }
 
         DateTime endDate = DateTime.Now;
@@ -155,20 +174,38 @@ class Program
         long fileSizeInBytes = fileInfo.Length;
         double fileSizeInKB = fileSizeInBytes / 1024.0;
 
+        /*
+         * Send email
+         */
         try
         {
-            // E-Mail Nachricht erstellen
+           
             MailMessage mail = new MailMessage();
             mail.From = new MailAddress($"Berechtigungsaudit <Berechtigungsaudit@{Environment.MachineName}.akm.at>");
             //mail.To.Add("meldungen.ber-audit.gbi@akm.at");
             mail.To.Add("meldungen.ber-audit.gbi@akm.at");
             mail.Subject = shareNameForFile + " - CSV erstellt und abgelegt";
-            mail.Body = $"{outfile} wurde erstellt und unter {outdir} abgelegt.\n\nStartzeit: {startDate}\nEndzeit: {endDate}\nAusführungsdauer: {executionTime}\nDateigröße: {fileSizeInKB:F2} KB\nAnzahl an Verzeichnissen: {numberOfFolders}\nAnzahl an Berechtigungen: {numberOfPermissions}";
+            mail.Body = $"{outfile} wurde erstellt und unter {outdir} abgelegt.\n\n";
+
+            mail.BodyEncoding = System.Text.Encoding.UTF8;
+            mail.SubjectEncoding = System.Text.Encoding.UTF8;
+
+            string statistics = $"Startzeit: {startDate}\nEndzeit: {endDate}\nAusführungsdauer: {executionTime}\nDateigröße: {fileSizeInKB:F2} KB\nAnzahl an Verzeichnissen: {numberOfFolders}\nAnzahl an Berechtigungen: {numberOfPermissions}";
+
+            mail.Body += statistics;
 
             string logText = String.Empty;
 
-            logText += $"Statistik für: {sharename}\n\nGruppen mit expliziten Berechtigungen:\n";
+            logText += $"Statistik für: {sharename}\n\n";
+
+            logText += statistics + "\n\n";
+
+            logText += "Gruppen mit expliziten Berechtigungen:\n";
             logText += String.Join(Environment.NewLine, explicitPermissionGroups.Distinct());
+
+
+            logText += "\n\nAus der Erfassung ausgeschlossene Accounts:\n";
+            logText += String.Join(Environment.NewLine, ignoredAccountsList.Distinct());
 
             logText += "\n\nAccounts mit expliziten Berechtigungen:\n";
             logText += String.Join(Environment.NewLine, explicitPermissionUsers.Distinct());
@@ -292,6 +329,7 @@ class Program
                 // Skip ignored identities
                 if (ignoredNames.Contains(identity))
                 {
+                    ignoredAccountsList.Add(identity);
                     continue;
                 }
 
@@ -302,6 +340,7 @@ class Program
                 {
                     if (Regex.IsMatch(identity, pattern))
                     {
+                        ignoredAccountsList.Add(identity);
                         doContinue = true;
                         break;
                     }
