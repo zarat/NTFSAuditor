@@ -111,34 +111,39 @@ class Program
     /// <summary>
     /// The generated excel file
     /// </summary>
-    public static ExcelPackage excelPackage = new ExcelPackage();
+    public static ExcelPackage excelPackage; // = new ExcelPackage();
 
-    public static ExcelWorksheet overviewSheet = excelPackage.Workbook.Worksheets.Add("Overview");
+
+    public static ExcelWorksheet overviewSheet; // = excelPackage.Workbook.Worksheets.Add("Overview");
     public static int overviewSheetRowCounter = 1; // 1st row is header
 
     /// <summary>
     /// Sheet 3
     /// </summary>
-    public static ExcelWorksheet sheet3 = excelPackage.Workbook.Worksheets.Add("All Permissions");
+    public static ExcelWorksheet sheet3; // = excelPackage.Workbook.Worksheets.Add("All Permissions");
     public static int sheet3RowCounter = 1; // 1st row is header
 
     /// <summary>
     /// Sheet 4
     /// </summary>
-    public static ExcelWorksheet sheet4 = excelPackage.Workbook.Worksheets.Add("Group Member");
+    public static ExcelWorksheet sheet4; // = excelPackage.Workbook.Worksheets.Add("Group Member");
     public static int sheet4RowCounter = 1; // 1st row is header
 
     /// <summary>
     /// Sheet 1
     /// </summary>
-    public static ExcelWorksheet sheet1 = excelPackage.Workbook.Worksheets.Add("Explicit User Permissions");
+    public static ExcelWorksheet sheet1; // = excelPackage.Workbook.Worksheets.Add("Explicit User Permissions");
     public static int sheet1RowCounter = 1; // 1st row is header
 
     /// <summary>
     /// Sheet 2
     /// </summary>
-    public static ExcelWorksheet sheet2 = excelPackage.Workbook.Worksheets.Add("Explicit Group Permissions");
+    public static ExcelWorksheet sheet2; // = excelPackage.Workbook.Worksheets.Add("Explicit Group Permissions");
     public static int sheet2RowCounter = 1; // 1st row is header
+
+    public static ExcelWorksheet currentSheet;
+    public static int currentSheetCounter = 1;
+    public static int currentSheetRowCounter = 1;
 
     /// <summary>
     /// 
@@ -149,12 +154,56 @@ class Program
 
     #region Methods
 
+    static void ReleaseMemory()
+    {
+
+        recursiveGroupsToResolve = null;
+
+        userList = null;
+
+        groupList = null;
+
+        ignoredAccountsList = null;
+
+        ignoredNames = null;
+
+        ignoredNamesWildcard = null;
+
+        explicitPermissionUsers = null;
+
+        explicitPermissionGroups = null;
+
+        explicitPermissionFoldersUsers = null;
+
+        explicitPermissionFoldersGroups = null;
+
+        explicitPermissionFoldersUsersInherited = null;
+
+        explicitPermissionFoldersGroupsInherited = null;
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+
+    }
+
     /// <summary>
     /// Main function
     /// </summary>
     /// <param name="args"></param>
     static void Main(string[] args)
     {
+
+        ExcelPackage.LicenseContext = OfficeOpenXml.LicenseContext.NonCommercial;
+
+        excelPackage = new ExcelPackage();
+
+        overviewSheet = excelPackage.Workbook.Worksheets.Add("Overview");
+        sheet1 = excelPackage.Workbook.Worksheets.Add("Explicit User Permissions");
+        sheet2 = excelPackage.Workbook.Worksheets.Add("Explicit Group Permissions");
+        sheet3 = excelPackage.Workbook.Worksheets.Add("All Permissions");
+        sheet4 = excelPackage.Workbook.Worksheets.Add("Group Member");
+
+        currentSheet = excelPackage.Workbook.Worksheets.Add("All Permissions " + currentSheetCounter);
 
         Console.WriteLine("\n\tNTFSAuditor\n\t(C) 2024 - AKM AustroMechana\n");
 
@@ -240,6 +289,18 @@ class Program
         sheet3.Column(2).Width = 50;
         sheet3.Column(3).Width = 50;
         sheet3.Column(4).Width = 50;
+
+        currentSheet.Cells[currentSheetRowCounter, 1].Value = "FolderPath";
+        currentSheet.Cells[currentSheetRowCounter, 2].Value = "IdentityReference";
+        currentSheet.Cells[currentSheetRowCounter, 3].Value = "FileSystemRights";
+        currentSheet.Cells[currentSheetRowCounter, 4].Value = "IsInherited";
+        currentSheetRowCounter++;
+
+        // set column width
+        currentSheet.Column(1).Width = 50;
+        currentSheet.Column(2).Width = 50;
+        currentSheet.Column(3).Width = 50;
+        currentSheet.Column(4).Width = 50;
 
         /*
          * Create lists of users and groups for comparision
@@ -469,7 +530,14 @@ class Program
 
         Console.Write($"[info] Excel Mappe wird aufbereitet.. ");
 
-        UpdateGroupReferences("All Permissions", 2, "Group Member", 1);
+        // todo release memory?
+        ReleaseMemory();
+
+        //UpdateGroupReferences("All Permissions", 2, "Group Member", 1);
+        for(int i = 1; i <= currentSheetCounter; i++)
+        {
+            UpdateGroupReferences("All Permissions " + i, 2, "Group Member", 1);
+        }
         UpdateGroupReferences("Explicit Group Permissions", 2, "Group Member", 1);
         UpdateGroupReferences("Overview", 1, "Group Member", 1);
 
@@ -514,6 +582,7 @@ class Program
 
             mail.Body += statistics;
 
+            /*
             string logText = String.Empty;
 
             logText += $"Statistik für: {sharename}\n\n";
@@ -544,6 +613,8 @@ class Program
             File.AppendAllText(logfilePath, logText);
 
             double logfileSizeInKB = new FileInfo(logfilePath).Length / 1024.0;
+
+            */
 
             double maxattachmentsize = 50000;
             double maxattachmentsize_tmp = Double.Parse((string)ReadConfig("/config/email/maxattachmentsize"));
@@ -799,6 +870,7 @@ class Program
 
                 if (0 == 0)
                 {
+                    /*
                     string outputString = $"\"{folderPath}\";{identity};{rights};{isInherited}";
                     File.AppendAllText(outfilePath, outputString + Environment.NewLine);
                     sheet3.Cells[sheet3RowCounter, 1].Value = folderPath;
@@ -806,6 +878,33 @@ class Program
                     sheet3.Cells[sheet3RowCounter, 3].Value = rule.FileSystemRights.ToString();
                     sheet3.Cells[sheet3RowCounter, 4].Value = rule.IsInherited;
                     sheet3RowCounter++;
+                    */
+
+                    string outputString = $"\"{folderPath}\";{identity};{rights};{isInherited}";
+                    File.AppendAllText(outfilePath, outputString + Environment.NewLine);
+                    currentSheet.Cells[currentSheetRowCounter, 1].Value = folderPath;
+                    currentSheet.Cells[currentSheetRowCounter, 2].Value = identity;
+                    currentSheet.Cells[currentSheetRowCounter, 3].Value = rule.FileSystemRights.ToString();
+                    currentSheet.Cells[currentSheetRowCounter, 4].Value = rule.IsInherited;
+                    currentSheetRowCounter++;
+
+                    if (currentSheetRowCounter > 1000000)
+                    {
+                        currentSheetCounter++;
+                        currentSheetRowCounter = 1;
+                        currentSheet = excelPackage.Workbook.Worksheets.Add($"All Permissions {currentSheetCounter}");
+                        currentSheet.Cells[currentSheetRowCounter, 1].Value = "FolderPath";
+                        currentSheet.Cells[currentSheetRowCounter, 2].Value = "IdentityReference";
+                        currentSheet.Cells[currentSheetRowCounter, 3].Value = "FileSystemRights";
+                        currentSheet.Cells[currentSheetRowCounter, 4].Value = "IsInherited";
+                        currentSheetRowCounter++; // Zurücksetzen des Zählers für das neue Arbeitsblatt
+
+                        currentSheet.Column(1).Width = 50;
+                        currentSheet.Column(2).Width = 50;
+                        currentSheet.Column(3).Width = 50;
+                        currentSheet.Column(4).Width = 50;
+                    }
+
                 }
             }
         }
