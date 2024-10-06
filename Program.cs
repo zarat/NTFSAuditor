@@ -20,11 +20,17 @@ using System.Drawing;
 using System.Data;
 using System.ComponentModel;
 using System.Reflection.PortableExecutable;
+using System.Security;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 
 class Program
 {
 
     #region Parameters
+
+    public static bool userCancelled = false;
+    public static bool fullyExecuted = false;
 
     /// <summary>
     /// For percentage display
@@ -113,47 +119,51 @@ class Program
     /// </summary>
     public static ExcelPackage excelPackage; // = new ExcelPackage();
 
-
+    /// <summary>
+    /// Overview Sheet
+    /// </summary>
     public static ExcelWorksheet overviewSheet; // = excelPackage.Workbook.Worksheets.Add("Overview");
     public static int overviewSheetRowCounter = 1; // 1st row is header
 
     /// <summary>
-    /// Sheet 3
+    /// Group Member Sheet
     /// </summary>
-    public static ExcelWorksheet sheet3; // = excelPackage.Workbook.Worksheets.Add("All Permissions");
-    public static int sheet3RowCounter = 1; // 1st row is header
-
-    /// <summary>
-    /// Sheet 4
-    /// </summary>
-    public static ExcelWorksheet sheet4; // = excelPackage.Workbook.Worksheets.Add("Group Member");
+    public static ExcelWorksheet groupMemberSheet; // = excelPackage.Workbook.Worksheets.Add("Group Member");
     public static int sheet4RowCounter = 1; // 1st row is header
 
     /// <summary>
-    /// Sheet 1
+    /// Explicit User Permissions Sheet
     /// </summary>
-    public static ExcelWorksheet sheet1; // = excelPackage.Workbook.Worksheets.Add("Explicit User Permissions");
-    public static int sheet1RowCounter = 1; // 1st row is header
+    public static ExcelWorksheet explicitUserPermissionsSheet; // = excelPackage.Workbook.Worksheets.Add("Explicit User Permissions");
+    public static int groupMemberSheetRowCounter = 1; // 1st row is header
 
     /// <summary>
-    /// Sheet 2
+    /// Explicit Group Permissions Sheet
     /// </summary>
-    public static ExcelWorksheet sheet2; // = excelPackage.Workbook.Worksheets.Add("Explicit Group Permissions");
-    public static int sheet2RowCounter = 1; // 1st row is header
+    public static ExcelWorksheet explicitGroupPermissionsSheet; // = excelPackage.Workbook.Worksheets.Add("Explicit Group Permissions");
+    public static int explicitGroupPermissionsSheetRowCounter = 1; // 1st row is header
 
+    /// <summary>
+    /// Auto numbered Permissions Sheet
+    /// </summary>
     public static ExcelWorksheet currentSheet;
     public static int currentSheetCounter = 1;
     public static int currentSheetRowCounter = 1;
 
     /// <summary>
-    /// 
+    /// \todo Resolve nested groups recursive
     /// </summary>
     static List<string> recursiveGroupsToResolve = new List<string>();
+
+    static string sharename = "Fehler";
 
     #endregion
 
     #region Methods
 
+    /// <summary>
+    /// Free temporary Lists to free memory
+    /// </summary>
     static void ReleaseMemory()
     {
 
@@ -187,22 +197,80 @@ class Program
     }
 
     /// <summary>
+    /// Write an eventlog
+    /// </summary>
+    /// <param name="message"></param>
+    /// <param name="eventLogEntryType"></param>
+    /// <param name="eventID"></param>
+    /// <param name="taskID"></param>
+    public static void WriteCustomEventLog(string message, EventLogEntryType eventLogEntryType = EventLogEntryType.Information, int eventID = 1, short taskID = 1, string tempEventSourceName = "")
+    {
+
+        string logName = "Berechtigungsaudit";
+        string eventSourceName = sharename; // "NTFSAudit";
+
+        if (tempEventSourceName != "")
+        {
+            eventSourceName = tempEventSourceName;
+        }
+
+        try
+        {
+            // Überprüfen, ob das EventLog schon existiert
+            if (!EventLog.SourceExists(eventSourceName))
+            {
+                // EventLog und Quelle erstellen
+                EventSourceCreationData sourceData = new EventSourceCreationData(eventSourceName, logName);
+                EventLog.CreateEventSource(sourceData);
+            }
+
+            // Mit dem EventLog verbinden und Einträge schreiben
+            using (EventLog eventLog = new EventLog(logName, Environment.MachineName, eventSourceName))
+            {
+                // Einen Eintrag in das EventLog schreiben
+                eventLog.WriteEntry(message, eventLogEntryType, eventID, taskID);
+
+                //Console.WriteLine("Eintrag wurde ins EventLog geschrieben.");
+            }
+
+        } catch(Exception ex) {
+
+            Console.WriteLine("[error] Konnte nicht in den EventLog schreiben, bitte das Programm mit ausreichenden administrativen Berechtigungen ausführen: " + ex.Message);
+            //throw ex;
+        
+        }
+
+    }
+
+    /// <summary>
     /// Main function
     /// </summary>
     /// <param name="args"></param>
-    static void Main(string[] args)
+    public static int Main(string[] args)
     {
+
+        // watch for ctrl-c
+        Console.CancelKeyPress += new ConsoleCancelEventHandler(CancelKeyPressHandler);
+        // watch for program exit
+        AppDomain.CurrentDomain.ProcessExit += new EventHandler(ProcessExitHandler);
+        // watch for unhandled exceptions
+        AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+        {
+            Exception ex = (Exception)e.ExceptionObject;
+            WriteCustomEventLog($"Unbehandelte Ausnahme: {ex.Message}\n\nStackTrace: {ex.StackTrace}", EventLogEntryType.Error, 1, 1);
+            Console.WriteLine($"Unbehandelte Ausnahme: {ex.Message}\n\nStackTrace: {ex.StackTrace}");
+            Environment.Exit(1);
+
+        };
 
         ExcelPackage.LicenseContext = OfficeOpenXml.LicenseContext.NonCommercial;
 
         excelPackage = new ExcelPackage();
 
         overviewSheet = excelPackage.Workbook.Worksheets.Add("Overview");
-        sheet1 = excelPackage.Workbook.Worksheets.Add("Explicit User Permissions");
-        sheet2 = excelPackage.Workbook.Worksheets.Add("Explicit Group Permissions");
-        sheet3 = excelPackage.Workbook.Worksheets.Add("All Permissions");
-        sheet4 = excelPackage.Workbook.Worksheets.Add("Group Member");
-
+        explicitUserPermissionsSheet = excelPackage.Workbook.Worksheets.Add("Explicit User Permissions");
+        explicitGroupPermissionsSheet = excelPackage.Workbook.Worksheets.Add("Explicit Group Permissions");
+        groupMemberSheet = excelPackage.Workbook.Worksheets.Add("Group Member");
         currentSheet = excelPackage.Workbook.Worksheets.Add("All Permissions " + currentSheetCounter);
 
         Console.WriteLine("\n\tNTFSAuditor\n\t(C) 2024 - AKM AustroMechana\n");
@@ -210,22 +278,20 @@ class Program
         if (args.Length == 0)
         {
             Console.WriteLine($"\tUsage: {Assembly.GetExecutingAssembly().GetName().Name}.exe <Sharename>\n");
-            return;
+            Environment.Exit(1);
+            //return 1;
         }
 
-        string sharename = args[0];
+        sharename = args[0];
+
+        WriteCustomEventLog($"Berechtigungsaudit für \"{sharename}\" hat begonnen.", EventLogEntryType.Information, 1, 1);
+
         string year = DateTime.Now.ToString("yyyy");
         string outdir = $@"C:\Scripts\Berechtigungsaudit\Shares\{year}";
         string outdir_tmp = (string)ReadConfig("/config/general/outdir");
         if (outdir_tmp != null && outdir_tmp != "")
         {
             outdir = outdir_tmp;
-        }
-
-        int showOnlyBroken_tmp = Int32.Parse((string)ReadConfig("/config/general/showonlybroken"));
-        if (showOnlyBroken_tmp.GetType() == typeof(int))
-        {
-            showOnlyBroken = showOnlyBroken_tmp;
         }
 
         if (!Directory.Exists(outdir))
@@ -237,13 +303,7 @@ class Program
         string shareNameForFile = sharename.Contains(@"\") ? sharename.Split('\\').Last() : sharename;
         string outfile = $"{shareNameForFile}_ntfs_{datenow}.csv";
         outfilePath = Path.Combine(outdir, outfile);
-        logfilePath = outfilePath.Replace("csv", "log");
-
-        /*
-         * Create excel spreadsheet
-         */
         excelfilePath = outfilePath.Replace("csv", "xlsx");
-        //ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
         overviewSheet.Cells[overviewSheetRowCounter++, 1].Value = "Bericht generiert am " + DateTime.Now.ToString("dd.MM.yyyy") + " um " + DateTime.Now.ToString("HH:mm");
         overviewSheet.Cells[overviewSheetRowCounter++, 1].Value = "Netzwerkfreigabe: " + sharename;
@@ -254,41 +314,29 @@ class Program
         overviewSheetRowCounter++;
         overviewSheet.Column(1).Width = 100;
 
-        sheet1.Cells[sheet1RowCounter, 1].Value = "FolderPath";
-        sheet1.Cells[sheet1RowCounter, 2].Value = "IdentityReference";
-        sheet1.Cells[sheet1RowCounter, 3].Value = "FileSystemRights";
-        sheet1.Cells[sheet1RowCounter, 4].Value = "IsInherited";
-        sheet1RowCounter++;
+        explicitUserPermissionsSheet.Cells[groupMemberSheetRowCounter, 1].Value = "FolderPath";
+        explicitUserPermissionsSheet.Cells[groupMemberSheetRowCounter, 2].Value = "IdentityReference";
+        explicitUserPermissionsSheet.Cells[groupMemberSheetRowCounter, 3].Value = "FileSystemRights";
+        explicitUserPermissionsSheet.Cells[groupMemberSheetRowCounter, 4].Value = "IsInherited";
+        groupMemberSheetRowCounter++;
 
         // set column width
-        sheet1.Column(1).Width = 50;
-        sheet1.Column(2).Width = 50;
-        sheet1.Column(3).Width = 50;
-        sheet1.Column(4).Width = 50;
+        explicitUserPermissionsSheet.Column(1).Width = 50;
+        explicitUserPermissionsSheet.Column(2).Width = 50;
+        explicitUserPermissionsSheet.Column(3).Width = 50;
+        explicitUserPermissionsSheet.Column(4).Width = 50;
 
-        sheet2.Cells[sheet2RowCounter, 1].Value = "FolderPath";
-        sheet2.Cells[sheet2RowCounter, 2].Value = "IdentityReference";
-        sheet2.Cells[sheet2RowCounter, 3].Value = "FileSystemRights";
-        sheet2.Cells[sheet2RowCounter, 4].Value = "IsInherited";
-        sheet2RowCounter++;
-
-        // set column width
-        sheet2.Column(1).Width = 50;
-        sheet2.Column(2).Width = 50;
-        sheet2.Column(3).Width = 50;
-        sheet2.Column(4).Width = 50;
-
-        sheet3.Cells[sheet3RowCounter, 1].Value = "FolderPath";
-        sheet3.Cells[sheet3RowCounter, 2].Value = "IdentityReference";
-        sheet3.Cells[sheet3RowCounter, 3].Value = "FileSystemRights";
-        sheet3.Cells[sheet3RowCounter, 4].Value = "IsInherited";
-        sheet3RowCounter++;
+        explicitGroupPermissionsSheet.Cells[explicitGroupPermissionsSheetRowCounter, 1].Value = "FolderPath";
+        explicitGroupPermissionsSheet.Cells[explicitGroupPermissionsSheetRowCounter, 2].Value = "IdentityReference";
+        explicitGroupPermissionsSheet.Cells[explicitGroupPermissionsSheetRowCounter, 3].Value = "FileSystemRights";
+        explicitGroupPermissionsSheet.Cells[explicitGroupPermissionsSheetRowCounter, 4].Value = "IsInherited";
+        explicitGroupPermissionsSheetRowCounter++;
 
         // set column width
-        sheet3.Column(1).Width = 50;
-        sheet3.Column(2).Width = 50;
-        sheet3.Column(3).Width = 50;
-        sheet3.Column(4).Width = 50;
+        explicitGroupPermissionsSheet.Column(1).Width = 50;
+        explicitGroupPermissionsSheet.Column(2).Width = 50;
+        explicitGroupPermissionsSheet.Column(3).Width = 50;
+        explicitGroupPermissionsSheet.Column(4).Width = 50;
 
         currentSheet.Cells[currentSheetRowCounter, 1].Value = "FolderPath";
         currentSheet.Cells[currentSheetRowCounter, 2].Value = "IdentityReference";
@@ -312,7 +360,6 @@ class Program
          * Delete existing files
          */
         if (File.Exists(outfilePath)) { File.Delete(outfilePath); }
-        if (File.Exists(logfilePath)) { File.Delete(logfilePath); }
 
         string outputString = "FolderPath;IdentityReference;FileSystemRights;IsInherited";
         File.AppendAllText(outfilePath, outputString + Environment.NewLine);
@@ -334,172 +381,154 @@ class Program
             remoteComputer = remoteComputer_tmp;
         }
 
-        //GetSharePermissions("\\\\" + remoteComputer, shareNameForFile);
-
-        ManagementScope scope = new ManagementScope($@"\\{remoteComputer}\root\cimv2");
-        scope.Connect();
-
-
-
-
-        /*
-         * Find all shares
-         */
-        string query1 = "SELECT Name, Path FROM Win32_Share";
-        ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery(query1));
-        Console.Write("[info] Ermittle verfügbare Shares.. ");
-        ManagementObjectCollection results = searcher.Get();
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine("OK!");
-        Console.ResetColor();
-
-        /*
-         * List all shares
-         */
-        //Console.WriteLine("[info] Available shares on fileserver:");
-        //foreach (ManagementObject share in results) Console.WriteLine($"Share: {share["Name"]} - Path: {share["Path"]}"); 
-
-        /*
-         * Find the corresponding share
-         */
-        //var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString() == sharename);
-        var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString().ToLower() == "\\\\fileserver\\" + sharename.ToLower());
-
-        // Todo: Error code when no share was found
-        if (foundShare != null)
+        try
         {
-            string found_shareName = foundShare["Name"].ToString();
-            string found_sharePath = foundShare["Path"].ToString();
+            ManagementScope scope = new ManagementScope($@"\\{remoteComputer}\root\cimv2");
+            scope.Connect();
+        
 
-            //Console.WriteLine($"[info] Share \"{found_shareName}\" gefunden. Pfad: \"{found_sharePath}\"");
+            /*
+             * Find all shares
+             */
+            string query1 = "SELECT Name, Path FROM Win32_Share";
+            ManagementObjectSearcher searcher = new ManagementObjectSearcher(scope, new ObjectQuery(query1));
+            Console.Write("[info] Ermittle verfügbare Shares.. ");
+            ManagementObjectCollection results = searcher.Get();
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("OK!");
+            Console.ResetColor();
 
-            // Get Share permissions
-            // WMI-Abfrage für die Freigaben (Share)
+            /*
+             * Find the corresponding share
+             */
+            //var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString() == sharename);
+            var foundShare = results.Cast<ManagementObject>().FirstOrDefault(s => s["Name"].ToString().ToLower() == "\\\\fileserver\\" + sharename.ToLower());
 
-            Console.WriteLine($"[info] Ermittle Share-Berechtigungen (SMB) für \"{found_shareName}\"");
-
-            string escapedShareName = found_shareName.Replace("\\", "\\\\");
-
-            ObjectQuery query2 = new ObjectQuery($"SELECT * FROM Win32_Share WHERE name LIKE '{escapedShareName}'");
-            searcher = new ManagementObjectSearcher(scope, query2);
-
-            foreach (ManagementObject share in searcher.Get())
+            // Todo: Error code when no share was found
+            if (foundShare != null)
             {
 
-                int foundSMBPermissions = 0;
+                string found_shareName = foundShare["Name"].ToString();
+                string found_sharePath = foundShare["Path"].ToString();
+
+                // Get Share permissions
+                Console.WriteLine($"[info] Ermittle Share-Berechtigungen (SMB) für \"{found_shareName}\"");
+
+                string escapedShareName = found_shareName.Replace("\\", "\\\\");
+
+                ObjectQuery query2 = new ObjectQuery($"SELECT * FROM Win32_Share WHERE name LIKE '{escapedShareName}'");
+                searcher = new ManagementObjectSearcher(scope, query2);
+
+                foreach (ManagementObject share in searcher.Get())
+                {
+
+                    int foundSMBPermissions = 0;
+
+                    try
+                    {
+
+                        DirectoryInfo dirInfo = new DirectoryInfo(share["Name"].ToString());
+                        DirectorySecurity dirSecurity = dirInfo.GetAccessControl();
+                        AuthorizationRuleCollection rules = dirSecurity.GetAccessRules(true, true, typeof(NTAccount));
+
+                        overviewSheetRowCounter++;
+                        overviewSheet.Cells[overviewSheetRowCounter, 1].Value = "Share Berechtigungen:";
+                        overviewSheet.Cells[overviewSheetRowCounter, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
+                        overviewSheet.Cells[overviewSheetRowCounter, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
+                        overviewSheetRowCounter++;
+
+                        foreach (FileSystemAccessRule rule in rules)
+                        {
+                            //Console.WriteLine($"\t{rule.IdentityReference.Value}: {rule.AccessControlType}, {rule.FileSystemRights}");
+
+                            string identity = rule.IdentityReference.Value;
+
+                            // Skip ignored identities
+                            if (ignoredNames.Contains(identity))
+                            {
+                                continue;
+                            }
+
+                            bool doContinue = false;
+
+                            // Check for wildcard ignored patterns
+                            foreach (var pattern in ignoredNamesWildcard)
+                            {
+                                if (Regex.IsMatch(identity, pattern))
+                                {
+                                    doContinue = true;
+                                    break;
+                                }
+                            }
+
+                            if (doContinue)
+                            {
+                                continue;
+                            }
+
+                            //overviewSheet.Cells[overviewSheetRowCounter, 1].Value = $"{rule.IdentityReference.Value}: {rule.AccessControlType}, {rule.FileSystemRights}";
+                            overviewSheet.Cells[overviewSheetRowCounter, 1].Value = $"{rule.IdentityReference.Value}";
+                            overviewSheet.Cells[overviewSheetRowCounter, 2].Value = $"{rule.FileSystemRights}";
+                            overviewSheetRowCounter++;
+
+                            foundSMBPermissions++;
+
+                        }
+                    }
+                    catch (UnauthorizedAccessException ex)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"[error] Zugriff verweigert: {ex.Message}");
+                        Console.ResetColor();
+
+                        WriteCustomEventLog($"Zugriff auf SMB Berechtigungen für \"{found_shareName}\" verweigert.\n{ex.Message}", EventLogEntryType.Error, 1, 1);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"[error] Fehler: {ex.Message}");
+                        Console.ResetColor();
+
+                        WriteCustomEventLog($"Fehler beim Zugriff auf SMB Berechtigungen für \"{found_shareName}\".\n{ex.Message}", EventLogEntryType.Error, 1, 1);
+                    }
+                    finally
+                    {
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"[info] OK! {foundSMBPermissions} SMB Berechtigungen protokolliert.");
+                        Console.ResetColor();
+                    }
+
+                }
 
                 try
                 {
-
-                    DirectoryInfo dirInfo = new DirectoryInfo(share["Name"].ToString());
-                    DirectorySecurity dirSecurity = dirInfo.GetAccessControl();
-                    AuthorizationRuleCollection rules = dirSecurity.GetAccessRules(true, true, typeof(NTAccount));
-
-                    overviewSheetRowCounter++;
-                    overviewSheet.Cells[overviewSheetRowCounter, 1].Value = "Share Berechtigungen:";
-                    overviewSheet.Cells[overviewSheetRowCounter, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
-                    overviewSheet.Cells[overviewSheetRowCounter, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
-                    overviewSheetRowCounter++;
-
-                    foreach (FileSystemAccessRule rule in rules)
-                    {
-                        //Console.WriteLine($"\t{rule.IdentityReference.Value}: {rule.AccessControlType}, {rule.FileSystemRights}");
-
-                        string identity = rule.IdentityReference.Value;
-
-                        // Skip ignored identities
-                        if (ignoredNames.Contains(identity))
-                        {
-                            continue;
-                        }
-
-                        bool doContinue = false;
-
-                        // Check for wildcard ignored patterns
-                        foreach (var pattern in ignoredNamesWildcard)
-                        {
-                            if (Regex.IsMatch(identity, pattern))
-                            {
-                                doContinue = true;
-                                break;
-                            }
-                        }
-
-                        if (doContinue)
-                        {
-                            continue;
-                        }
-
-                        //overviewSheet.Cells[overviewSheetRowCounter, 1].Value = $"{rule.IdentityReference.Value}: {rule.AccessControlType}, {rule.FileSystemRights}";
-                        overviewSheet.Cells[overviewSheetRowCounter, 1].Value = $"{rule.IdentityReference.Value}";
-                        overviewSheet.Cells[overviewSheetRowCounter, 2].Value = $"{rule.FileSystemRights}";
-                        overviewSheetRowCounter++;
-
-                        foundSMBPermissions++;
-
-                    }
+                    ProcessDirectory(found_shareName, outfilePath);
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"[error] Zugriff verweigert: {ex.Message}");
-                    Console.ResetColor();
+                    //Console.WriteLine($"[warning] Test1: {ex}");
                 }
                 catch (Exception ex)
                 {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"[error] Fehler: {ex.Message}");
-                    Console.ResetColor();
-                }
-                finally
-                {
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"[info] OK! {foundSMBPermissions} SMB Berechtigungen protokolliert.");
-                    Console.ResetColor();
+                    Console.WriteLine($"[warning] Test2: {ex}");
                 }
 
-                /*
-                try { 
-                // WMI-Abfrage für die Berechtigungen
-                ManagementBaseObject securityDescriptor = share.InvokeMethod("GetSecurityDescriptor", null, null);
-                ManagementBaseObject descriptor = (ManagementBaseObject)securityDescriptor["Descriptor"];
-                ManagementBaseObject[] dacl = (ManagementBaseObject[])descriptor["DACL"];
-
-                foreach (var ace in dacl)
-                {
-                    var trustee = (ManagementBaseObject)ace["Trustee"];
-                    string accountName = (string)trustee["Name"];
-                    string domainName = (string)trustee["Domain"];
-                    int accessMask = (int)ace["AccessMask"];
-
-                    // Die AccessMask beschreibt die Berechtigungen
-                    Console.WriteLine($"{domainName}\\{accountName}: AccessMask = {accessMask}");
-                }
-
-                } catch(ManagementException me) { Console.WriteLine("[error] " + me.Message); }
-                */
-
             }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[error] Share \"{sharename}\" konnte nicht gefunden werden.");
+                Console.ResetColor();
 
-            try
-            {
-                ProcessDirectory(found_shareName, outfilePath);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                //Console.WriteLine($"[warning] Test1: {ex}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[warning] Test2: {ex}");
+                WriteCustomEventLog($"Share \"{sharename}\" konnte nicht gefunden werden. Audit wird beendet.", EventLogEntryType.Error, 1, 1);
+                return 1;
             }
 
         }
-        else
+        catch (Exception ex)
         {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"[error] Share \"{sharename}\" konnte nicht gefunden werden.");
-            Console.ResetColor();
+            WriteCustomEventLog($"Zugriff auf {remoteComputer} wurde verweigert", EventLogEntryType.Error, 1, 1, "WMI Fehler");
+            Environment.Exit(1);
         }
 
         DateTime endDate = DateTime.Now;
@@ -513,7 +542,12 @@ class Program
         Console.WriteLine($"[info] Ausführungsdauer: \"{executionTime}\"");
         Console.ResetColor();
 
+        // mark nested groups
         GenerateGroupMember();
+
+        // resolve nested groups before releasing memory!
+        ResolveRecursiveGroups();
+        UpdateResolvedGroupLinks();
 
         //FileInfo fileInfo = new FileInfo(outdir + "\\" + outfile);
         //long fileSizeInBytes = fileInfo.Length;
@@ -540,6 +574,9 @@ class Program
         }
         UpdateGroupReferences("Explicit Group Permissions", 2, "Group Member", 1);
         UpdateGroupReferences("Overview", 1, "Group Member", 1);
+
+        // resolve nested groups
+        //ResolveRecursiveGroups();
 
         double excelFileSizeInKB = new FileInfo(excelfilePath).Length / 1024.0;
 
@@ -651,31 +688,25 @@ class Program
             smtpClient.Send(mail);
             Console.WriteLine($"[info] E-Mail wurde erfolgreich an \"{sendto}\" gesendet.");
 
+            WriteCustomEventLog($"Email wurde erfolgreich an \"{sendto}\" gesendet.", EventLogEntryType.Information, 1, 1);
+
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[error] Fehler beim Senden der E-Mail: " + ex.Message);
+
+            WriteCustomEventLog($"Email wurde nicht versendet.", EventLogEntryType.Error, 1, 1);
         }
 
         /*
         // ToDo
         ResolveRecursiveGroups();
-
-        FileInfo fi = new FileInfo(excelfilePath);
-        excelPackage.SaveAs(fi);
-
-        Console.Write($"[info] Excel Mappe wird aufbereitet.. ");
-
-        UpdateGroupReferences("All Permissions", "Group Member");
-        //UpdateGroupReferences("Explicit User Permissions", "Group Member");
-        UpdateGroupReferences("Explicit Group Permissions", "Group Member");
-
-
-
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.Write("OK!");
-        Console.ResetColor();
         */
+
+        fullyExecuted = true;
+        WriteCustomEventLog($"Berechtigungsaudit für \"{sharename}\" wurde beendet.", EventLogEntryType.Information, 1, 1);
+
+        return 0;
 
     }
 
@@ -708,6 +739,8 @@ class Program
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"[error] Zugriff verweigert auf: {folderPath}");
             Console.ResetColor();
+
+            WriteCustomEventLog($"Beim Zugriff auf\n\n\"{folderPath}\"\n\nist ein Fehler aufgetreten.\n\n{ex.Message}", EventLogEntryType.Warning, 1, 1);
         }
         catch (Exception ex)
         {
@@ -715,6 +748,8 @@ class Program
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine($"[warning] {ex.Message}");
             Console.ResetColor();
+
+            WriteCustomEventLog($"Beim Zugriff auf\n\n\"{folderPath}\"\n\nist ein Fehler aufgetreten.\n\n{ex.Message}", EventLogEntryType.Warning, 1, 1);
         }
 
     }
@@ -738,6 +773,8 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"Ein Fehler ist aufgetreten: {ex.Message}");
+
+            WriteCustomEventLog($"Fehler beim Analysieren der Verzeichnisstruktur.\n\n{ex.Message}", EventLogEntryType.Error, 1, 1);
         }
 
         Console.ForegroundColor = ConsoleColor.Green;
@@ -827,11 +864,11 @@ class Program
                         {
                             string outputString_user = $"\"{folderPath}\";{identity};{rule.FileSystemRights.ToString()};{rule.IsInherited}";
                             File.AppendAllText(outfilePath, outputString_user + Environment.NewLine);
-                            sheet1.Cells[sheet1RowCounter, 1].Value = folderPath;
-                            sheet1.Cells[sheet1RowCounter, 2].Value = identity;
-                            sheet1.Cells[sheet1RowCounter, 3].Value = rule.FileSystemRights.ToString();
-                            sheet1.Cells[sheet1RowCounter, 4].Value = rule.IsInherited;
-                            sheet1RowCounter++;
+                            explicitUserPermissionsSheet.Cells[groupMemberSheetRowCounter, 1].Value = folderPath;
+                            explicitUserPermissionsSheet.Cells[groupMemberSheetRowCounter, 2].Value = identity;
+                            explicitUserPermissionsSheet.Cells[groupMemberSheetRowCounter, 3].Value = rule.FileSystemRights.ToString();
+                            explicitUserPermissionsSheet.Cells[groupMemberSheetRowCounter, 4].Value = rule.IsInherited;
+                            groupMemberSheetRowCounter++;
                         }
 
                     }
@@ -852,11 +889,11 @@ class Program
                         {
                             string outputString_group = $"\"{folderPath}\";{identity};{rule.FileSystemRights.ToString()};{rule.IsInherited}";
                             File.AppendAllText(outfilePath, outputString_group + Environment.NewLine);
-                            sheet2.Cells[sheet2RowCounter, 1].Value = folderPath;
-                            sheet2.Cells[sheet2RowCounter, 2].Value = identity;
-                            sheet2.Cells[sheet2RowCounter, 3].Value = rule.FileSystemRights.ToString();
-                            sheet2.Cells[sheet2RowCounter, 4].Value = rule.IsInherited;
-                            sheet2RowCounter++;
+                            explicitGroupPermissionsSheet.Cells[explicitGroupPermissionsSheetRowCounter, 1].Value = folderPath;
+                            explicitGroupPermissionsSheet.Cells[explicitGroupPermissionsSheetRowCounter, 2].Value = identity;
+                            explicitGroupPermissionsSheet.Cells[explicitGroupPermissionsSheetRowCounter, 3].Value = rule.FileSystemRights.ToString();
+                            explicitGroupPermissionsSheet.Cells[explicitGroupPermissionsSheetRowCounter, 4].Value = rule.IsInherited;
+                            explicitGroupPermissionsSheetRowCounter++;
                         }
 
                     }
@@ -910,13 +947,16 @@ class Program
         }
         catch (UnauthorizedAccessException ex)
         {
-            throw ex;
+            //throw ex;
             //Console.WriteLine($"[warning] Access denied when processing directory {folderPath}: {ex.Message}");
+            // ToDo
+            WriteCustomEventLog($"Der Zugriff auf\n\n\"{folderPath}\"\n\nwurde verweigert:\n\n{ex.Message}", EventLogEntryType.Error, 1, 1);
         }
         catch (Exception ex)
         {
             // Interferes with percentage display
             //Console.WriteLine($"[error] An error occurred when processing directory {folderPath}: {ex.Message}");
+            WriteCustomEventLog($"Ein Fehler beim Zugriff auf\n\n\"{folderPath}\"\n\nist aufgetreten:\n\n{ex.Message}", EventLogEntryType.Error, 1, 1);
         }
     }
 
@@ -930,6 +970,14 @@ class Program
     static object ReadConfig(string elem)
     {
         string configFile = System.AppDomain.CurrentDomain.BaseDirectory + "config.xml";
+
+        if(!File.Exists(configFile))
+        {
+            WriteCustomEventLog($"Fehler beim Lesen der Konfigurationsdatei \"{configFile}\".", EventLogEntryType.Error, 1, 1);
+            //Console.WriteLine($"Fehler beim Lesen der Konfigurationsdatei \"{configFile}\"");
+            Environment.FailFast("Die Konfigurationsdatei fehlt. Beende das Programm sofort.");  //Environment.Exit(1);
+        }
+
         XmlDocument doc = new XmlDocument();
         doc.Load(configFile);
         XmlNode node = doc.DocumentElement.SelectSingleNode(elem);
@@ -938,6 +986,9 @@ class Program
             string text = node.InnerText;
             return text;
         }
+
+        WriteCustomEventLog($"Fehler beim Lesen des Attributs \"{elem}\" aus der Konfigurationsdatei.", EventLogEntryType.Error, 1, 1);
+
         return null;
     }
 
@@ -949,6 +1000,14 @@ class Program
     static List<string> ReadConfigList(string elem)
     {
         string configFile = System.AppDomain.CurrentDomain.BaseDirectory + "config.xml";
+
+        if (!File.Exists(configFile))
+        {
+            WriteCustomEventLog($"Fehler beim Lesen der Konfigurationsdatei \"{configFile}\".", EventLogEntryType.Error, 1, 1);
+            //Console.WriteLine($"Fehler beim Lesen der Konfigurationsdatei \"{configFile}\"");
+            Environment.FailFast("Die Konfigurationsdatei fehlt. Beende das Programm sofort.");  //Environment.Exit(1);
+        }
+
         XmlDocument doc = new XmlDocument();
         doc.Load(configFile);
 
@@ -964,14 +1023,19 @@ class Program
             {
                 userList.Add(node.InnerText);
             }
+
+            return userList;
         }
 
-        return userList;
+        WriteCustomEventLog($"Fehler beim Lesen des Attributs \"{elem}\" aus der Konfigurationsdatei.", EventLogEntryType.Error, 1, 1);
+
+        return null;
     }
 
     /// <summary>
     /// Create a list of users from active directory
     /// </summary>
+    /// \ToDo Domain
     static void CreateUserList()
     {
 
@@ -1035,6 +1099,10 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"Exception: {ex.Message}");
+
+            WriteCustomEventLog($"Fehler beim Erstellen der Liste der AD-User. {ex.Message}", EventLogEntryType.Error, 1, 1);
+            Environment.Exit(1);
+
         }
 
         Console.ForegroundColor = ConsoleColor.Green;
@@ -1045,6 +1113,7 @@ class Program
     /// <summary>
     /// Create a list of groups from active directory
     /// </summary>
+    /// \ToDo Domain
     static void CreateGroupList()
     {
 
@@ -1091,6 +1160,10 @@ class Program
         catch (Exception ex)
         {
             Console.WriteLine($"Exception: {ex.Message}");
+
+            WriteCustomEventLog($"Fehler beim Erstellen der Liste der AD-Gruppen. {ex.Message}", EventLogEntryType.Error, 1, 1);
+            Environment.Exit(1);
+
         }
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine("OK!");
@@ -1111,14 +1184,14 @@ class Program
             //Console.WriteLine($"[info] Writing {group}");
 
             // Setze den Gruppennamen als Spaltenüberschrift
-            sheet4.Cells[rowIndex, 1].Value = group;
+            groupMemberSheet.Cells[rowIndex, 1].Value = group;
 
             // Set background color
-            sheet4.Cells[rowIndex, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
-            sheet4.Cells[rowIndex, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
+            groupMemberSheet.Cells[rowIndex, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
+            groupMemberSheet.Cells[rowIndex, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
 
             // set column width
-            sheet4.Column(1).Width = 50;
+            groupMemberSheet.Column(1).Width = 50;
 
             rowIndex++;
 
@@ -1128,15 +1201,16 @@ class Program
             // Füge die Mitglieder unter der Spaltenüberschrift ein
             foreach (string member in members)
             {
-                sheet4.Cells[rowIndex, 1].Value = member;
+                groupMemberSheet.Cells[rowIndex, 1].Value = member;
 
                 // ToDo
                 if (IsUserAGroup(member))
                 {
 
+                    //todo
                     recursiveGroupsToResolve.Add(member);
 
-                    sheet4.Cells[rowIndex, 2].Value = "Group";
+                    groupMemberSheet.Cells[rowIndex, 2].Value = "Group";
 
                 }
 
@@ -1175,67 +1249,6 @@ class Program
             return false;
         }
 
-    }
-
-    /// <summary>
-    /// Update cells with hyperlink
-    /// 
-    /// param "src" - Where the hyperlinks are inserted
-    /// param "target" - Where the hyperlinks link to
-    /// </summary>
-    /// <param name="src">Where the hyperlinks are inserted</param>
-    /// <param name="target">Where the hyperlinks link to</param>
-    static void UpdateGroupReferences1(string src, string target)
-    {
-        // Pfad zur Excel-Datei
-        string filePath = excelfilePath;
-
-        // Öffne die vorhandene Excel-Datei
-        FileInfo file = new FileInfo(filePath);
-        using (var package = new ExcelPackage(file))
-        {
-            // Hole das Arbeitsblatt, das die Gruppenreferenzen braucht (z.B. "AnotherSheet")
-            // All Permissions
-            var targetWorksheet = package.Workbook.Worksheets[src];
-
-            // Hole das Gruppen-Arbeitsblatt
-            // Group Member
-            var groupWorksheet = package.Workbook.Worksheets[target];
-
-            int row = 2; // Starte bei Zeile 2 (angenommen, Zeile 1 hat Überschriften)
-
-            while (targetWorksheet.Cells[row, 2].Value != null) // Durchlaufe die Zeilen, bis keine Daten mehr vorhanden sind
-            {
-
-                string groupName = targetWorksheet.Cells[row, 2].Value.ToString();
-
-                //Console.WriteLine($"[debug] Found group {groupName} in AllPermissions");
-
-                // Finde die Zeile im "Group Members" Sheet, wo der Gruppennamen steht
-                for (int groupRow = 1; groupRow <= groupWorksheet.Dimension.End.Row; groupRow++)
-                {
-
-                    //Console.WriteLine($"[debug] Found group {groupWorksheet.Cells[groupRow, 2].Value} in Group Member");
-
-                    if (groupWorksheet.Cells[groupRow, 1].Value != null && groupWorksheet.Cells[groupRow, 1].Value.ToString() == groupName)
-                    {
-                        // Setze die Referenz auf die Gruppe
-                        // Console.WriteLine($"[debug] Updating {groupName} in AllPermissions to reference group {groupWorksheet.Cells[groupRow, 1].Value} in Group Member");
-
-                        string cellReference = $"=HYPERLINK(\"#'{target}'!A{groupRow}\",\"{groupName}\")";
-
-                        targetWorksheet.Cells[row, 2].Formula = cellReference;
-                        targetWorksheet.Cells[row, 2].Style.Font.Color.SetColor(System.Drawing.Color.Blue);
-                        break;
-                    }
-                }
-
-                row++;
-            }
-
-            // Speichere die Änderungen
-            package.Save();
-        }
     }
 
     static void UpdateGroupReferences(string src, int srcColumn, string target, int targetColumn)
@@ -1288,6 +1301,7 @@ class Program
                             srcWorksheet.Cells[row, srcColumn].Style.Font.Color.SetColor(System.Drawing.Color.Blue);
                             break;
                         }
+                    
                     }
 
                 } catch (NullReferenceException nre) { }
@@ -1307,6 +1321,16 @@ class Program
     /// <returns></returns>
     static List<string> GetGroupMembers(string groupName)
     {
+
+        // Spezielle Behandlung für die Gruppe "Domänen-Benutzer"
+        if (groupName == "D2000\\Domänen-Benutzer")
+        {
+            return GetDomainUsers();
+        }
+
+        //Console.WriteLine($"[debug] Looking up group members for \"{groupName}\".");
+        int foundEntries = 0;
+
         List<string> membersList = new List<string>();
         try
         {
@@ -1325,9 +1349,14 @@ class Program
 
             if (result != null)
             {
+
+                //Console.WriteLine($"[debug] Found group \"{groupName}\".");
+
                 // Hole alle Mitglieder der Gruppe
                 var members = result.Properties["member"];
 
+                //Console.WriteLine($"[debug] It has \"{members.Count}\" member.");
+                
                 foreach (var member in members)
                 {
                     //membersList.Add(member.ToString());
@@ -1359,12 +1388,9 @@ class Program
                     }
 
                     membersList.Add(samAccountName);
+                    foundEntries++;
 
                 }
-            }
-            else
-            {
-                Console.WriteLine($"[error] Group {groupName} not found.");
             }
         }
         catch (Exception ex)
@@ -1372,6 +1398,77 @@ class Program
             Console.WriteLine($"[error]Error fetching group members: {ex.Message}");
         }
 
+        //Console.WriteLine($"[debug] Found {foundEntries} entries.");
+        return membersList;
+    }
+
+    static List<string> GetDomainUsers()
+    {
+        //Console.WriteLine("[debug] Looking up members of 'Domänen-Benutzer' group via primaryGroupID.");
+        int foundEntries = 0;
+
+        List<string> membersList = new List<string>();
+        try
+        {
+            System.DirectoryServices.DirectoryEntry entry = new System.DirectoryServices.DirectoryEntry("LDAP://DC=d2000,DC=local");
+            DirectorySearcher searcher = new DirectorySearcher(entry);
+            searcher.PropertiesToLoad.Add("sAMAccountName");
+            searcher.PropertiesToLoad.Add("extensionAttribute10");
+
+            // Suche nach Benutzern mit primaryGroupID = 513 (für "Domänen-Benutzer")
+            searcher.Filter = "(&(objectCategory=person)(objectClass=user)(primaryGroupID=513))";
+
+            SearchResultCollection results = searcher.FindAll();
+
+            if (results != null)
+            {
+                //Console.WriteLine($"[debug] Found \"{results.Count}\" members in 'Domänen-Benutzer'.");
+
+                foreach (SearchResult result in results)
+                {
+                    System.DirectoryServices.DirectoryEntry userEntry = result.GetDirectoryEntry();
+                    string samAccountName = userEntry.Properties["sAMAccountName"].Value.ToString();
+                    string samAccountNameToSearch = "D2000\\" + samAccountName;
+
+                    if(userEntry.Properties["extensionAttribute10"].Value == null || userEntry.Properties["extensionAttribute10"].Value.ToString() != "User")
+                    {
+                        continue;
+                    }
+
+                    // Skip ignored identities
+                    if (ignoredNames.Contains(samAccountNameToSearch))
+                    {
+                        continue;
+                    }
+
+                    bool doContinue = false;
+
+                    // Check for wildcard ignored patterns
+                    foreach (var pattern in ignoredNamesWildcard)
+                    {
+                        if (Regex.IsMatch(samAccountNameToSearch, pattern))
+                        {
+                            doContinue = true;
+                            break;
+                        }
+                    }
+
+                    if (doContinue)
+                    {
+                        continue;
+                    }
+
+                    membersList.Add(samAccountName);
+                    foundEntries++;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[error] Error fetching members of 'Domänen-Benutzer': {ex.Message}");
+        }
+
+        //Console.WriteLine($"[debug] Found {foundEntries} entries.");
         return membersList;
     }
 
@@ -1407,17 +1504,35 @@ class Program
     static void ResolveRecursiveGroups()
     {
 
-        int lastRow = sheet4.Dimension.End.Row;
+        Console.WriteLine("[debug] Resolving recursive groups..");
+
+        recursiveGroupsToResolve = new List<string>();
+
+        List<string> recursiveGroupsToResolveTemp = new List<string>();
+
+        // finde alle markierten zeilen
+        for (int i = 1; i <= groupMemberSheet.Dimension.End.Row; i++)
+        {
+            if (groupMemberSheet.Cells[i, 2].Value != null && groupMemberSheet.Cells[i, 2].Value.ToString() == "Group")
+            {
+                recursiveGroupsToResolve.Add(groupMemberSheet.Cells[i, 1].Value.ToString());
+                groupMemberSheet.Cells[i, 2].Value = "Resolved";
+            }
+        }
+
+        if (recursiveGroupsToResolve.Count == 0) { return; }
+       
+        int lastRow = groupMemberSheet.Dimension.End.Row;
 
         lastRow += 2;
 
         foreach (string v in recursiveGroupsToResolve.Distinct())
         {
 
-            sheet4.Cells[lastRow, 1].Value = "D2000\\" + v;
+            groupMemberSheet.Cells[lastRow, 1].Value = "D2000\\" + v;
             // Set background color
-            sheet4.Cells[lastRow, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
-            sheet4.Cells[lastRow, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
+            groupMemberSheet.Cells[lastRow, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
+            groupMemberSheet.Cells[lastRow, 1].Style.Fill.BackgroundColor.SetColor(Color.LightBlue);
 
             lastRow++;
 
@@ -1425,7 +1540,19 @@ class Program
 
             foreach (string u in tmp)
             {
-                sheet4.Cells[lastRow, 1].Value = u;
+                groupMemberSheet.Cells[lastRow, 1].Value = u;
+
+                // ToDo
+                if (IsUserAGroup(u))
+                {
+
+                    //todo
+                    recursiveGroupsToResolveTemp.Add(u);
+
+                    groupMemberSheet.Cells[lastRow, 2].Value = "Group";
+
+                }
+
                 lastRow++;
             }
 
@@ -1433,6 +1560,70 @@ class Program
 
         }
 
+        recursiveGroupsToResolve = recursiveGroupsToResolveTemp;
+
+        ResolveRecursiveGroups();
+
+    }
+
+    static void UpdateResolvedGroupLinks()
+    {
+
+        Console.WriteLine("[debug] Resolving recursive group links..");
+
+        // finde alle markierten zeilen
+        for (int i = 1; i <= groupMemberSheet.Dimension.End.Row; i++)
+        {
+
+            if (groupMemberSheet.Cells[i, 2].Value != null && groupMemberSheet.Cells[i, 2].Value.ToString() == "Resolved")
+            {
+
+                string groupName = groupMemberSheet.Cells[i, 1].Value.ToString();
+
+                // find resolved group
+                for (int j = 1; j <= groupMemberSheet.Dimension.End.Row; j++)
+                {
+                    if (groupMemberSheet.Cells[j, 1].Value != null && groupMemberSheet.Cells[j, 1].Value.ToString() == "D2000\\" + groupName)
+                    {
+                        // insert link
+                        string cellReference = $"=HYPERLINK(\"#'Group Member'!A{j}\",\"{groupName}\")";
+                        groupMemberSheet.Cells[i, 1].Formula = cellReference;
+                        groupMemberSheet.Cells[i, 1].Style.Font.Color.SetColor(System.Drawing.Color.Blue);
+                    }
+                }
+
+            }
+
+            groupMemberSheet.Cells[i, 2].Value = "";
+
+        }
+
+    }
+
+    static void CancelKeyPressHandler(object sender, ConsoleCancelEventArgs e)
+    {
+        WriteCustomEventLog("Der Prozess wurde durch den Benutzer durch drücken von \"Ctrl-C\" abgebrochen.", EventLogEntryType.Error, 1, 1);
+        //e.Cancel = true; // Verhindert das sofortige Beenden des Programms
+        userCancelled = true; // Setzt eine Flag, um zu erkennen, dass Strg+C gedrückt wurde
+    }
+
+    static void ProcessExitHandler(object sender, EventArgs e)
+    {
+        
+        if(!fullyExecuted)
+        {
+            if (userCancelled)
+            {
+                //Console.WriteLine("Programm wurde durch Strg+C beendet.");
+                WriteCustomEventLog("Der Prozess wurde vom Benutzer durch drücken von \"Ctrl-C\" abgebrochen.", EventLogEntryType.Error, 1, 1);
+            }
+            else
+            {
+                WriteCustomEventLog("Der Prozess wurde unerwartet beendet.", EventLogEntryType.Error, 1, 1);
+            }
+        }
+
+        // Hier kannst du Ressourcen aufräumen oder Speicher freigeben
     }
 
     #endregion
