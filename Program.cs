@@ -1529,6 +1529,18 @@ class Program
         foreach (string v in recursiveGroupsToResolve.Distinct())
         {
 
+            // check if its already resolved
+            bool shouldContinue = false;
+            for (int i = 1; i <= groupMemberSheet.Dimension.End.Row; i++)
+            {
+                if (groupMemberSheet.Cells[i, 1].Value != null && groupMemberSheet.Cells[i, 1].Value.ToString() == "D2000\\" + v)
+                {
+                    shouldContinue = true;
+                }
+            }
+            if (shouldContinue)
+                continue;
+
             groupMemberSheet.Cells[lastRow, 1].Value = "D2000\\" + v;
             // Set background color
             groupMemberSheet.Cells[lastRow, 1].Style.Fill.PatternType = ExcelFillStyle.Solid;
