@@ -1,7 +1,6 @@
 <config>
 	<general>
 		<servername>fileserver</servername>
-		<showonlybroken>0</showonlybroken>
 		<outdir>C:\Scripts\Berechtigungsaudit\Shares\2024</outdir>
 	</general>
 	<email>
