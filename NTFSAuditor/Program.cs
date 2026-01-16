@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 
  * To switch between AKM-Fileserver and any other fileserver, see and change these lines:
  * Search "for fileserver"
@@ -852,7 +852,12 @@ public class Program
 
     }
 
-    public static void ProcessRootDirectory1(string folderPath, string outfilePath)
+    /// <summary>
+    /// Faster, but order of processing is not guaranteed.
+    /// </summary>
+    /// <param name="folderPath"></param>
+    /// <param name="outfilePath"></param>
+    public static void ProcessRootDirectoryParallel(string folderPath, string outfilePath)
     {
         Console.WriteLine("[info] Analysiere Verzeichnisstruktur..");
 
@@ -939,69 +944,6 @@ public class Program
             WriteCustomEventLog($"Beim Zugriff auf\n\n\"{folderPath}\"\n\nist ein Fehler aufgetreten.\n\n{ex.Message}", EventLogEntryType.Warning, 1, 1);
         }
 
-    }
-
-
-    static string ConvertToApplyTo(InheritanceFlags inheritance, PropagationFlags propagation)
-    {
-        if (inheritance == InheritanceFlags.None)
-            return "Nur dieser Ordner";
-
-        if (inheritance == InheritanceFlags.ContainerInherit && propagation == PropagationFlags.None)
-            return "Dieser Ordner und Unterordner";
-
-        if (inheritance == InheritanceFlags.ContainerInherit && propagation == PropagationFlags.InheritOnly)
-            return "Nur Unterordner";
-
-        if (inheritance == InheritanceFlags.ObjectInherit && propagation == PropagationFlags.None)
-            return "Dieser Ordner und Dateien";
-
-        if (inheritance == (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit))
-            return "Dieser Ordner, Unterordner und Dateien";
-
-        return "Unbekannt";
-    }
-
-    static string FindRootOfInheritance(string folderPath, FileSystemAccessRule inheritedRule)
-    {
-        DirectoryInfo parent = Directory.GetParent(folderPath);
-        string lastFoundAt = "Unbekannt";
-
-        while (parent != null)
-        {
-            DirectorySecurity parentSecurity = parent.GetAccessControl();
-            AuthorizationRuleCollection parentAcl = parentSecurity.GetAccessRules(true, true, typeof(NTAccount));
-
-            bool ruleExists = false;
-            foreach (FileSystemAccessRule parentRule in parentAcl)
-            {
-                if (RulesMatch(inheritedRule, parentRule))
-                {
-                    ruleExists = true;
-                    lastFoundAt = parent.FullName;
-                    break;
-                }
-            }
-
-            // Wenn die Regel hier nicht mehr existiert, dann war der letzte gefundene Ordner der Ursprung
-            if (!ruleExists)
-            {
-                return lastFoundAt;
-            }
-
-            parent = Directory.GetParent(parent.FullName);
-        }
-
-        return lastFoundAt;
-    }
-
-    static bool RulesMatch(FileSystemAccessRule inheritedRule, FileSystemAccessRule parentRule)
-    {
-        return inheritedRule.IdentityReference == parentRule.IdentityReference &&
-               inheritedRule.FileSystemRights == parentRule.FileSystemRights &&
-               inheritedRule.AccessControlType == parentRule.AccessControlType &&
-               inheritedRule.InheritanceFlags == parentRule.InheritanceFlags &&
-               inheritedRule.PropagationFlags == parentRule.PropagationFlags;
     }
 
     /// <summary>
@@ -1208,6 +1150,69 @@ public class Program
     #endregion
 
     #region Helper Methods
+
+    static string ConvertToApplyTo(InheritanceFlags inheritance, PropagationFlags propagation)
+    {
+        if (inheritance == InheritanceFlags.None)
+            return "Nur dieser Ordner";
+
+        if (inheritance == InheritanceFlags.ContainerInherit && propagation == PropagationFlags.None)
+            return "Dieser Ordner und Unterordner";
+
+        if (inheritance == InheritanceFlags.ContainerInherit && propagation == PropagationFlags.InheritOnly)
+            return "Nur Unterordner";
+
+        if (inheritance == InheritanceFlags.ObjectInherit && propagation == PropagationFlags.None)
+            return "Dieser Ordner und Dateien";
+
+        if (inheritance == (InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit))
+            return "Dieser Ordner, Unterordner und Dateien";
+
+        return "Unbekannt";
+    }
+
+    static string FindRootOfInheritance(string folderPath, FileSystemAccessRule inheritedRule)
+    {
+        DirectoryInfo parent = Directory.GetParent(folderPath);
+        string lastFoundAt = "Unbekannt";
+
+        while (parent != null)
+        {
+            DirectorySecurity parentSecurity = parent.GetAccessControl();
+            AuthorizationRuleCollection parentAcl = parentSecurity.GetAccessRules(true, true, typeof(NTAccount));
+
+            bool ruleExists = false;
+            foreach (FileSystemAccessRule parentRule in parentAcl)
+            {
+                if (RulesMatch(inheritedRule, parentRule))
+                {
+                    ruleExists = true;
+                    lastFoundAt = parent.FullName;
+                    break;
+                }
+            }
+
+            // Wenn die Regel hier nicht mehr existiert, dann war der letzte gefundene Ordner der Ursprung
+            if (!ruleExists)
+            {
+                return lastFoundAt;
+            }
+
+            parent = Directory.GetParent(parent.FullName);
+        }
+
+        return lastFoundAt;
+    }
+
+    static bool RulesMatch(FileSystemAccessRule inheritedRule, FileSystemAccessRule parentRule)
+    {
+        return inheritedRule.IdentityReference == parentRule.IdentityReference &&
+               inheritedRule.FileSystemRights == parentRule.FileSystemRights &&
+               inheritedRule.AccessControlType == parentRule.AccessControlType &&
+               inheritedRule.InheritanceFlags == parentRule.InheritanceFlags &&
+               inheritedRule.PropagationFlags == parentRule.PropagationFlags;
+    }
+
 
     /// <summary>
     /// Read extended ntfs rights
